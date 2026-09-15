@@ -18,8 +18,8 @@ tinybrains -- run a TinyBrains match locally
   tinybrains maps [GAME]                     the boards a game is played on
   tinybrains maps export [GAME] [DIR]        write those boards out as files
   tinybrains view <replay.json>              watch it in a browser
-  tinybrains check <model.onnx> <adapter>    would this be admitted?  [--json]
-  tinybrains adapt <adapter.json> [...]      dump the tensors an adapter produces
+  tinybrains check <model.onnx> <manifest>   would this be admitted?  [--json]
+  tinybrains adapt <manifest.json> [...]     dump the tensors an adapter produces
   tinybrains conform <replay.json>           replay a recorded match here, and diff
   tinybrains env [...]                       the cartridge as a training environment
 

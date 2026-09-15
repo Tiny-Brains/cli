@@ -130,14 +130,18 @@ fn compare(platform: &Value, local: &Value) -> Vec<Diff> {
         }
     };
 
+    // `evaluator_digest` and `dialect_version` were compared here until the 1.8.1 rebuild, and
+    // were left behind when nothing wrote them any more -- two comparisons of `null` against
+    // `null`, always equal, in the one check that keeps two match loops honest. Their replacement
+    // is NOT comparable and must not be added back: `orion_version` says which Orion ran the
+    // adapters, and a local run is not a node (`wave.rs` writes `tinybrains-cli/datalogic-<ver>`
+    // on purpose rather than claiming a version it is not). What conform asserts is the MATCH.
     for f in [
         "seed",
         "preset",
         "map",
         "map_id",
         "engine_digest",
-        "evaluator_digest",
-        "dialect_version",
         "reason",
         "turns",
         "engine_ranks",
