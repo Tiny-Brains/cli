@@ -5,8 +5,8 @@
 //! match. So it is the entire input here, which makes a conformance run a diff rather than a
 //! translation.
 //!
-//! The one local addition: a seat may name `weights`/`adapter` -- a path or a URL -- instead of
-//! `weights_hash`/`adapter_hash`. A file that uses only hashes is byte-compatible with the
+//! The one local addition: a seat may name `weights`/`manifest` -- a path or a URL -- instead of
+//! `weights_hash`/`manifest_hash`. A file that uses only hashes is byte-compatible with the
 //! database. Self-play, an older version, a downloaded release and a baseline all fall out of that.
 
 use std::path::{Path, PathBuf};
@@ -35,7 +35,7 @@ pub struct Row {
 pub struct Seat {
     pub seat: u64,
     pub weights_hash: String,
-    pub adapter_hash: String,
+    pub manifest_hash: String,
     /// Orders written down instead of inferred, one entry per turn: either one order for every ant
     /// (`"E"`) or one per ant in `mine` order (`["E", "W"]`). Past the end of the script a seat
     /// holds. A scripted seat never reaches the loader, so a tutorial costs no ONNX and still goes
@@ -140,7 +140,7 @@ impl Seat {
             return Ok(Seat {
                 seat,
                 weights_hash: String::new(),
-                adapter_hash: String::new(),
+                manifest_hash: String::new(),
                 script: Some(script.clone()),
                 label: label("scripted"),
             });
@@ -149,12 +149,12 @@ impl Seat {
         // The production form: a seat naming hashes is already what the database holds.
         if let (Some(w), Some(a)) = (
             s.get("weights_hash").and_then(Value::as_str),
-            s.get("adapter_hash").and_then(Value::as_str),
+            s.get("manifest_hash").and_then(Value::as_str),
         ) {
             return Ok(Seat {
                 seat,
                 weights_hash: w.to_string(),
-                adapter_hash: a.to_string(),
+                manifest_hash: a.to_string(),
                 script: None,
                 label: label(store::short(w)),
             });
@@ -162,12 +162,12 @@ impl Seat {
 
         // The local superset: a path or a URL, read and hashed into the store.
         let w = s.get("weights").and_then(Value::as_str).ok_or_else(|| {
-            format!("{here}: needs `weights_hash` + `adapter_hash`, `weights` + `adapter`, or a `script`")
+            format!("{here}: needs `weights_hash` + `manifest_hash`, `weights` + `manifest`, or a `script`")
         })?;
         let a = s
-            .get("adapter")
+            .get("manifest")
             .and_then(Value::as_str)
-            .ok_or_else(|| format!("{here}: has `weights` but no `adapter`"))?;
+            .ok_or_else(|| format!("{here}: has `weights` but no `manifest`"))?;
 
         let load = |kind, spec: &str| -> Result<String, String> {
             let bytes = store::bytes_of(spec, base).map_err(|e| format!("{here}: {e}"))?;
@@ -176,8 +176,8 @@ impl Seat {
 
         Ok(Seat {
             seat,
-            weights_hash: load(axon::store::Kind::Weights, w)?,
-            adapter_hash: load(axon::store::Kind::Adapter, a)?,
+            weights_hash: load(store::Kind::Weights, w)?,
+            manifest_hash: load(store::Kind::Manifest, a)?,
             script: None,
             label: label(&name_of(w)),
         })

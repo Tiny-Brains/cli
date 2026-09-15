@@ -22,27 +22,45 @@ pub fn open_game(slug: Option<&str>) -> Result<Game, String> {
     reg.resolve(&slug, &path)
 }
 
-/// Replica mode over the local model store: the one config difference from the fleet.
-pub fn axon_replica() -> Result<axon::server::Axon, String> {
-    Ok(axon::server::Axon::new(axon_config(axon::config::Mode::Replica)?))
+/// The loaded models of one run, keyed by what identifies a session on a node: the artifact's
+/// digest and the manifest that binds it.
+///
+/// A node's session cache is keyed on `(digest, runtime, device, binding)` since Orion 1.8.1 --
+/// the binding being what the load actually reads out of the manifest. This is the same idea with
+/// one runtime and one device, and for the same reason: two manifests over one artifact are two
+/// plans, and serving one from the other's session is the silent wrong answer that fix was for.
+#[derive(Default)]
+pub struct Models {
+    loaded: std::cell::RefCell<
+        std::collections::HashMap<(String, String), std::rc::Rc<crate::model::Model>>,
+    >,
 }
 
-pub fn axon_config(mode: axon::config::Mode) -> Result<axon::config::Config, String> {
-    Ok(axon::config::Config {
-        mode,
-        bind: "127.0.0.1:0".to_string(),
-        auth_token: None,
-        memory_budget_bytes: 4 << 30,
-        max_weights_bytes: 256 << 20,
-        max_adapter_bytes: 4 << 20,
-        default_idle_ttl_s: 900,
-        threads: 1,
-        max_in_flight: 1,
-        store: axon::config::StoreSpec::Dir(store::models_dir()?),
-        // Empty as on a replica. A URL in a match file is fetched by the CLI before the loader is
-        // asked for anything, so the loader still never reaches out.
-        fetch_allow_hosts: Vec::new(),
-    })
+impl Models {
+    pub fn new() -> Models {
+        Models::default()
+    }
+
+    /// The model for one seat, loaded on first use from the local store.
+    pub fn get(
+        &self,
+        weights_hash: &str,
+        manifest_hash: &str,
+    ) -> Result<std::rc::Rc<crate::model::Model>, String> {
+        let key = (weights_hash.to_string(), manifest_hash.to_string());
+        if let Some(m) = self.loaded.borrow().get(&key) {
+            return Ok(m.clone());
+        }
+        let onnx = store::get(store::Kind::Weights, weights_hash)
+            .ok_or_else(|| format!("no artifact stored under {weights_hash}"))?;
+        let mbytes = store::get(store::Kind::Manifest, manifest_hash)
+            .ok_or_else(|| format!("no manifest stored under {manifest_hash}"))?;
+        let manifest: serde_json::Value = serde_json::from_slice(&mbytes)
+            .map_err(|e| format!("the manifest under {manifest_hash} is not JSON: {e}"))?;
+        let model = std::rc::Rc::new(crate::model::Model::load(&manifest, &onnx)?);
+        self.loaded.borrow_mut().insert(key, model.clone());
+        Ok(model)
+    }
 }
 
 /// `--game SLUG`, plus the positional arguments, for the commands that take nothing else.

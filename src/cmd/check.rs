@@ -1,10 +1,15 @@
-//! Admission's own `inspect` and `validate`, in the same crate, against the game's reference
-//! observations. Necessary and not sufficient: no download allowlist here, and the size class is
-//! reported rather than decided because that table is Jodi's policy.
+//! What admission will do, done here first: read the graph, run the manifest's adapters over the
+//! game's reference observations under the season's budget, and check the head is one the platform
+//! can read.
+//!
+//! Necessary and not sufficient. There is no download allowlist here, the size class is *reported*
+//! rather than decided because that table is the season's, and a node re-hashes the object it
+//! fetches — so a pass here says the submission is well formed, not that it was admitted.
 
 use serde_json::{Value, json};
 
-use crate::cmd::{axon_config, game_and_rest, open_game, reference_observations};
+use crate::cmd::{game_and_rest, open_game, reference_observations};
+use crate::model::Model;
 use crate::store;
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -15,7 +20,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let (slug, files) = game_and_rest(&args)?;
     if files.len() != 2 {
         return Err(
-            "which model?\n\n  tinybrains check out/model.onnx out/adapter.json".to_string()
+            "which model?\n\n  tinybrains check out/model.onnx out/manifest.json".to_string()
         );
     }
     let game = open_game(slug.as_deref())?;
@@ -23,30 +28,68 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let cwd = std::path::PathBuf::from(".");
     let wb = store::bytes_of(&files[0], &cwd)?;
-    let ab = store::bytes_of(&files[1], &cwd)?;
-    let weights = store::put(axon::store::Kind::Weights, &wb)?;
-    let adapter = store::put(axon::store::Kind::Adapter, &ab)?;
+    let mb = store::bytes_of(&files[1], &cwd)?;
+    let weights = store::put(store::Kind::Weights, &wb)?;
+    let manifest_hash = store::put(store::Kind::Manifest, &mb)?;
+    let manifest: Value =
+        serde_json::from_slice(&mb).map_err(|e| format!("{}: not JSON: {e}", files[1]))?;
+
+    // S' -- the bytes the node measures against a digest it re-hashes, plus the document the
+    // submission forwards (decision R4). Both terms are unforgeable, which the old metric's
+    // first term was not: it compressed initializers, and a graph can carry its weights
+    // somewhere else.
+    let size_metric = wb.len() + mb.len();
 
     if !json_out {
         println!("{} against {}'s reference set", files[0], game.slug);
         println!("    weights          {weights}");
-        println!("    adapter          {adapter}");
+        println!("    manifest         {manifest_hash}");
         println!();
     }
 
-    // Admission mode: a replica answers NO_SUCH_CALL for both of these, deliberately.
-    let axon = axon::server::Axon::new(axon_config(axon::config::Mode::Admission)?);
     let budget = game.budget("adapter_ops_max", 1_000_000);
     // Stricter than admission, which allows more per observation than a turn does.
     let deadline = game.limit("turn_ms", 1000);
-    let (ok, ins, val) =
-        gate(&axon, &weights, &adapter, &observations, budget, deadline, json_out)?;
+
+    let stats = crate::onnx::stats(&wb)?;
+    let model = Model::load(&manifest, &wb)?;
+    if !json_out {
+        report_graph(&stats, &model, size_metric);
+        println!();
+        println!(
+            "adapters  ({} reference observations, budget {budget}, turn {deadline} ms)",
+            observations.len()
+        );
+    }
+
+    let mut ops_max = 0u64;
+    let mut infer_us_max = 0u64;
+    let mut failure: Option<(usize, String, bool)> = None;
+    for (i, obs) in observations.iter().enumerate() {
+        match model.infer(obs, budget) {
+            Ok(inf) => {
+                ops_max = ops_max.max(inf.peak_ops);
+                infer_us_max = infer_us_max.max(inf.infer_us);
+                // The head has to be one the platform can gather from, so `check` reads it exactly
+                // as `tb-match` does rather than merely noting that something came back.
+                if let Err(e) = head_reads(&inf, obs) {
+                    failure = Some((i, e, false));
+                    break;
+                }
+            }
+            Err(e) => {
+                let over = e.contains("budget") || e.contains("Budget");
+                failure = Some((i, e, over));
+                break;
+            }
+        }
+    }
+    let ok = failure.is_none();
 
     if json_out {
-        // Machine-readable, for a repository that automates this -- exporting a model into a weight
-        // class is a loop of build, measure, resize, and parsing prose is how that loop breaks on a
-        // wording change. The two replies whole, plus what the caller would otherwise have to know
-        // to interpret them.
+        // Machine-readable, for a repository that automates this -- exporting a model into a
+        // weight class is a loop of build, measure, resize, and parsing prose is how that loop
+        // breaks on a wording change.
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -54,16 +97,60 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 "game": game.slug,
                 "engine_digest": game.engine_digest,
                 "weights_hash": weights,
-                "adapter_hash": adapter,
+                "manifest_hash": manifest_hash,
                 "budget_ops": budget,
                 "deadline_ms": deadline,
                 "observations": observations.len(),
-                "inspect": ins,
-                "validate": val,
+                "graph": {
+                    "parameters": stats.parameters,
+                    "nodes": stats.nodes,
+                    "operators": stats.operators,
+                    "ir_version": stats.ir_version,
+                    "opset": stats.opset,
+                },
+                "size_metric_bytes": size_metric,
+                "artifact_bytes": wb.len(),
+                "manifest_bytes": mb.len(),
+                "ops_max": ops_max,
+                "infer_us_max": infer_us_max,
+                "failing_case": failure.as_ref().map(|(i, ..)| *i),
+                "reason": failure.as_ref().map(|(_, e, _)| e.clone()),
+                "over_budget": failure.as_ref().map(|(.., o)| *o),
             }))
             .map_err(|e| e.to_string())?
         );
     } else {
+        match &failure {
+            None => {
+                let pct = ops_max * 100 / budget.max(1);
+                println!("    PASSED");
+                println!("    worst case       {ops_max} operations, {pct}% of the budget");
+                if pct > 80 {
+                    println!(
+                        "    little headroom -- a busier board than any of these would exceed it"
+                    );
+                }
+                // Reported, never a gate: there is no compute cap (devops decision 46), and wall
+                // clock belongs to whichever machine ran it. It is here because the TURN DEADLINE
+                // is what a graph too expensive to play runs into.
+                println!(
+                    "    slowest graph    {:.2} ms of inference  (measured here, not a threshold: \
+                     no class caps compute)",
+                    infer_us_max as f64 / 1000.0
+                );
+            }
+            Some((i, e, over)) => {
+                println!("    FAILED  {e}");
+                println!("    failing case     observation {i} of {}", observations.len());
+                // Too expensive is not the same as wrong; collapsing them sends someone to
+                // re-read the expression reference for a budget problem.
+                if *over {
+                    println!("    the adapter is too expensive, not incorrect");
+                } else {
+                    println!("    the adapter is incorrect, not merely expensive");
+                }
+            }
+        }
         println!();
         println!(
             "This is not admission. It has no download allowlist and does not decide a size class,"
@@ -76,137 +163,36 @@ pub fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn gate(
-    axon: &axon::server::Axon,
-    weights_hash: &str,
-    adapter_hash: &str,
-    observations: &[Value],
-    budget_ops: u64,
-    deadline_ms: u64,
-    quiet: bool,
-) -> Result<(bool, Value, Value), String> {
-    let models = json!([{ "weights_hash": weights_hash, "adapter_hash": adapter_hash }]);
-
-    // Hold it first: a model that will not load is a different failure from one that misbehaves.
-    let hold: axon::api::LoadRequest =
-        serde_json::from_value(json!({ "models": models, "wait_ms": 60000 }))
-            .map_err(|e| e.to_string())?;
-    let held = serde_json::to_value(axon.load(hold)).map_err(|e| e.to_string())?;
-    let state = held["models"][0]["state"].as_str().unwrap_or("?");
-    if state != "resident" {
-        return Err(format!(
-            "the loader would not hold it: {state} {}\n  fault: {}",
-            held["models"][0]["reason"].as_str().unwrap_or(""),
-            held["models"][0]["fault"].as_str().unwrap_or("unstated"),
-        ));
+/// Read the head the way `tb-match` reads it, and say why if it cannot.
+fn head_reads(inf: &crate::model::Inference, obs: &Value) -> Result<(), String> {
+    let (shape, values) = inf
+        .f32_output("policy")
+        .ok_or_else(|| "the manifest declares no f32 output named `policy`".to_string())?;
+    let mine: Vec<(usize, usize)> = obs["mine"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|p| (p[0].as_u64().unwrap_or(0) as usize, p[1].as_u64().unwrap_or(0) as usize))
+                .collect()
+        })
+        .unwrap_or_default();
+    let cols = obs["size"][1].as_u64().unwrap_or(0) as usize;
+    let acts = crate::model::decode(shape, &values, &mine, cols)?;
+    if acts.len() != mine.len() {
+        return Err(format!("the head decoded {} actions for {} ants", acts.len(), mine.len()));
     }
-
-    let req: axon::api::InspectRequest = serde_json::from_value(
-        json!({ "weights_hash": weights_hash, "adapter_hash": adapter_hash }),
-    )
-    .map_err(|e| e.to_string())?;
-    let ins = match axon.inspect(req) {
-        Ok(r) => serde_json::to_value(r).map_err(|e| e.to_string())?,
-        Err(e) => {
-            return Err(format!(
-                "inspect refused: {}",
-                serde_json::to_value(e).unwrap_or_default()
-            ));
-        }
-    };
-    if !quiet {
-        report_graph(&ins);
-        println!();
-        println!(
-            "validate  ({} reference observations, budget {budget_ops}, deadline {deadline_ms} ms)",
-            observations.len()
-        );
-    }
-    let req: axon::api::ValidateRequest = serde_json::from_value(json!({
-        "weights_hash": weights_hash,
-        "adapter_hash": adapter_hash,
-        "budget_ops": budget_ops,
-        "deadline_ms": deadline_ms,
-        "observations": observations,
-    }))
-    .map_err(|e| e.to_string())?;
-    let val = serde_json::to_value(axon.validate(req)).map_err(|e| e.to_string())?;
-    let ok = if quiet {
-        val["ok"].as_bool().unwrap_or(false)
-    } else {
-        report_validation(&val, observations.len(), budget_ops)
-    };
-
-    let unload: axon::api::UnloadRequest =
-        serde_json::from_value(json!({ "models": models })).map_err(|e| e.to_string())?;
-    axon.unload(unload);
-    Ok((ok, ins, val))
+    Ok(())
 }
 
-fn strings(v: &Value) -> Vec<&str> {
-    v.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default()
-}
-
-fn report_graph(ins: &Value) {
+fn report_graph(stats: &crate::onnx::Stats, model: &Model, size_metric: usize) {
     println!("graph");
-    println!("    opset            {}", ins["opset"]);
-    println!("    parameters       {}", ins["params"]);
+    println!("    opset            {}", stats.opset);
+    println!("    parameters       {}", stats.parameters);
+    println!("    nodes            {}", stats.nodes);
     println!(
-        "    size metric      {} bytes  (zstd of weights + adapter -- the platform classifies it, this does not)",
-        ins["size_metric_bytes"]
+        "    size metric      {size_metric} bytes  (artifact + manifest -- the platform classifies \
+         it, this does not)"
     );
-    println!("    operators        {}", strings(&ins["ops"]).join(", "));
-    let bad = strings(&ins["unsupported_ops"]);
-    if !bad.is_empty() {
-        println!("    UNSUPPORTED      {}", bad.join(", "));
-    }
-    for key in ["inputs", "outputs"] {
-        let ports: Vec<String> = ins[key]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .map(|p| format!("{}{}", p["name"].as_str().unwrap_or("?"), p["shape"]))
-                    .collect()
-            })
-            .unwrap_or_default();
-        println!("    {key:<16} {}", ports.join(" "));
-    }
-}
-
-fn report_validation(val: &Value, observations: usize, budget_ops: u64) -> bool {
-    if val["ok"].as_bool().unwrap_or(false) {
-        let used = val["ops_max"].as_u64().unwrap_or(0);
-        let pct = used * 100 / budget_ops.max(1);
-        println!("    PASSED");
-        println!("    worst case       {used} operations, {pct}% of the budget");
-        // The worst case is what admission refuses, so the mean is not the number to watch.
-        if pct > 80 {
-            println!("    little headroom -- a busier board than any of these would exceed it");
-        }
-        // Reported, never a gate: there is no compute cap (devops decision 46), and wall clock
-        // belongs to whichever machine ran it. It is here because the TURN DEADLINE is what a
-        // graph too expensive to play runs into, and this is the only local sight of it.
-        let us = val["infer_us_max"].as_u64().unwrap_or(0);
-        println!(
-            "    slowest graph    {:.2} ms of inference  (measured here, not a threshold: no \
-             class caps compute)",
-            us as f64 / 1000.0
-        );
-        return true;
-    }
-    println!("    FAILED  {}", val["reason"].as_str().unwrap_or("unstated"));
-    if let Some(d) = val["detail"].as_str() {
-        println!("    detail           {d}");
-    }
-    if let Some(i) = val["failing_case"].as_u64() {
-        println!("    failing case     observation {i} of {observations}");
-    }
-    // Too expensive is not the same as wrong; collapsing them sends someone to re-read the dialect
-    // for a budget problem (jodi/docs/admission.md §13).
-    match val["over_budget"].as_bool() {
-        Some(true) => println!("    the adapter is too expensive, not incorrect"),
-        Some(false) => println!("    the adapter is incorrect, not merely expensive"),
-        None => {}
-    }
-    false
+    println!("    operators        {}", stats.operators.join(", "));
+    println!("    inputs           {}", model.input_names().join(" "));
 }

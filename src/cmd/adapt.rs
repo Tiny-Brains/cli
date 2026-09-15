@@ -1,16 +1,18 @@
-//! `tinybrains adapt` — run an adapter's `in` program and write out the tensors it produced.
+//! `tinybrains adapt` — run a manifest's input adapters and write out the tensors they produced.
 //!
 //! **This exists because an adapter is half of what plays, and until now nothing could show you
 //! what it actually produced.** `check` reports shapes; a competitor training in Python encodes
 //! observations twice — once in `adapter.json` for the ladder and once in numpy for the trainer —
-//! and two implementations of one encoding is the classic way to ship a model that scores worse in
-//! the arena than it did in training. This is the tool that lets the two be *diffed* rather than
-//! believed: dump the ladder's own answer, and assert your encoder equals it.
+//! observations twice — once in the manifest's adapters for the ladder and once in numpy for the
+//! trainer — and two implementations of one encoding is the classic way to ship a model that
+//! scores worse in the arena than it did in training. This is the tool that lets the two be
+//! *diffed* rather than believed: dump the ladder's own answer, and assert your encoder equals it.
 //!
 //! `.npy` because that is the one array format every trainer already reads, and because writing it
-//! needs no dependency: a header and the same bytes `Tensor::to_bytes` already packs for ORT.
+//! needs no dependency: a header and the bytes the tensor already carries.
 //!
-//! It knows no game. The adapter is the dialect's, the observations are the cartridge's.
+//! It knows no game. The adapters are the manifest's, the observations are the cartridge's — and
+//! they are evaluated by datalogic, which is the evaluator a node runs them on.
 
 use std::path::PathBuf;
 
@@ -44,13 +46,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         i += 1;
     }
-    if rest.len() != 1 {
-        return Err("which adapter?\n\n  tinybrains adapt adapter.json [--obs FILE] [--out DIR]"
-            .to_string());
+    if rest.len() != 2 {
+        return Err(
+            "which model?\n\n  tinybrains adapt model.onnx manifest.json [--obs FILE] [--out DIR]"
+                .to_string(),
+        );
     }
 
-    let bytes = std::fs::read(&rest[0]).map_err(|e| format!("{}: {e}", rest[0]))?;
-    let adapter = axon::dialect::Adapter::parse(&bytes).map_err(|e| format!("{}: {e}", rest[0]))?;
+    let onnx = std::fs::read(&rest[0]).map_err(|e| format!("{}: {e}", rest[0]))?;
+    let mbytes = std::fs::read(&rest[1]).map_err(|e| format!("{}: {e}", rest[1]))?;
+    let manifest: Value =
+        serde_json::from_slice(&mbytes).map_err(|e| format!("{}: not JSON: {e}", rest[1]))?;
+    // The graph is loaded too, though nothing is run through it: a manifest whose declared shapes
+    // the graph refuses is wrong in a way the tensors alone would not show.
+    let model = crate::model::Model::load(&manifest, &onnx)?;
 
     let game = open_game(slug.as_deref())?;
     let (observations, source) = match &obs_file {
@@ -66,26 +75,27 @@ pub fn run(args: &[String]) -> Result<(), String> {
         observations.len(),
         if observations.len() == 1 { "" } else { "s" }
     );
-    println!("    dialect          {}", adapter.dialect);
-    println!("    evaluator        {}", axon::dialect::evaluator_digest());
+    println!("    manifest         {}", crate::store::digest(&mbytes));
+    println!("    inputs           {}", model.input_names().join(" "));
     println!();
 
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let mut cases = Vec::new();
     for (i, obs) in observations.iter().enumerate() {
-        let (ports, ops) = adapter.run_in(obs, budget);
-        let ports = ports.map_err(|e| format!("observation {i}: {e}"))?;
+        let ports = model.adapt(obs, budget).map_err(|e| format!("observation {i}: {e}"))?;
+        let ops = ports.iter().map(|(.., ops)| *ops).max().unwrap_or(0);
 
         let dir = out.join(format!("case-{i}"));
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let mut wrote = Vec::new();
-        for (name, t) in &ports {
+        for (name, dtype, shape, bytes, _) in &ports {
             let path = dir.join(format!("{name}.npy"));
-            std::fs::write(&path, npy(t)?).map_err(|e| format!("{}: {e}", path.display()))?;
+            std::fs::write(&path, npy(dtype, shape, bytes)?)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
             wrote.push(json!({
-                "name": name.to_string(),
-                "dtype": t.dtype.name(),
-                "shape": t.shape,
+                "name": name,
+                "dtype": dtype,
+                "shape": shape,
                 "file": path.display().to_string(),
             }));
         }
@@ -103,25 +113,25 @@ pub fn run(args: &[String]) -> Result<(), String> {
             ops * 100 / budget.max(1),
             ports
                 .iter()
-                .map(|(n, t)| format!("{n}{:?}:{}", t.shape, t.dtype.name()))
+                .map(|(n, dt, shape, ..)| format!("{n}{shape:?}:{dt}"))
                 .collect::<Vec<_>>()
                 .join(" ")
         );
         cases.push(json!({ "case": i, "ops_in": ops, "tensors": wrote }));
     }
 
-    let manifest = json!({
-        "adapter": rest[0],
+    let index = json!({
+        "artifact": rest[0],
+        "manifest": rest[1],
+        "manifest_hash": crate::store::digest(&mbytes),
         "game": game.slug,
         "engine_digest": game.engine_digest,
-        "evaluator_digest": axon::dialect::evaluator_digest(),
-        "dialect_version": axon::dialect::DIALECT_VERSION,
         "budget_ops": budget,
         "source": source,
         "cases": cases,
     });
-    let mpath = out.join("manifest.json");
-    std::fs::write(&mpath, serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)
+    let mpath = out.join("index.json");
+    std::fs::write(&mpath, serde_json::to_vec_pretty(&index).map_err(|e| e.to_string())?)
         .map_err(|e| format!("{}: {e}", mpath.display()))?;
 
     println!();
@@ -137,20 +147,27 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
 /// NPY v1.0. The header is padded so the data starts 64-byte aligned, which is what numpy itself
 /// writes and what `np.load` with `mmap_mode` expects.
-fn npy(t: &axon::dialect::Tensor) -> Result<Vec<u8>, String> {
-    let descr = match t.dtype.name() {
-        "int8" => "|i1",
-        "uint8" => "|u1",
-        "int16" => "<i2",
-        "int32" => "<i4",
-        "float32" => "<f4",
+fn npy(dtype: &str, shape: &[usize], data: &[u8]) -> Result<Vec<u8>, String> {
+    // The datavalue dtype names, which are what a manifest writes.
+    let descr = match dtype {
+        "i8" => "|i1",
+        "u8" => "|u1",
+        "bool" => "|b1",
+        "i16" => "<i2",
+        "u16" => "<u2",
+        "i32" => "<i4",
+        "u32" => "<u4",
+        "i64" => "<i8",
+        "u64" => "<u8",
+        "f32" => "<f4",
+        "f64" => "<f8",
         other => return Err(format!("no numpy descriptor for dtype '{other}'")),
     };
     // A rank-1 shape needs the trailing comma or Python reads a parenthesised expression.
-    let shape = match t.shape.len() {
+    let shape = match shape.len() {
         0 => "()".to_string(),
-        1 => format!("({},)", t.shape[0]),
-        _ => format!("({})", t.shape.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(", ")),
+        1 => format!("({},)", shape[0]),
+        _ => format!("({})", shape.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(", ")),
     };
     let head = format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': {shape}, }}");
     let mut pad = 64 - ((10 + head.len() + 1) % 64);
@@ -159,11 +176,11 @@ fn npy(t: &axon::dialect::Tensor) -> Result<Vec<u8>, String> {
     }
     let header = format!("{head}{}\n", " ".repeat(pad));
 
-    let mut out = Vec::with_capacity(10 + header.len() + t.len() * t.dtype.bytes());
+    let mut out = Vec::with_capacity(10 + header.len() + data.len());
     out.extend_from_slice(b"\x93NUMPY\x01\x00");
     out.extend_from_slice(&(header.len() as u16).to_le_bytes());
     out.extend_from_slice(header.as_bytes());
-    out.extend_from_slice(&t.to_bytes());
+    out.extend_from_slice(data);
     Ok(out)
 }
 

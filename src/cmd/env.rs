@@ -104,8 +104,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "hello": {
                 "game": game.slug,
                 "engine_digest": game.engine_digest,
-                "evaluator_digest": axon::dialect::evaluator_digest(),
-                "dialect_version": axon::dialect::DIALECT_VERSION,
+                "evaluator": format!("datalogic {}", crate::model::DATALOGIC_VERSION),
                 "presets": presets.iter()
                     .map(|p| json!({ "name": p.name, "players": p.players }))
                     .collect::<Vec<_>>(),

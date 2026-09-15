@@ -6,7 +6,7 @@
 use serde_json::{Value, json};
 
 use crate::cartridge::Cartridge;
-use crate::cmd::{axon_replica, game_and_rest, open_game};
+use crate::cmd::{Models, game_and_rest, open_game};
 use crate::matchfile::MatchFile;
 use crate::store::short;
 use crate::wave;
@@ -58,8 +58,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     );
 
     let cart = Cartridge::open(&game.component).map_err(|e| e.to_string())?;
-    let axon = axon_replica()?;
-    let report = wave::run(&game, &cart, &mf, &axon, false)?;
+    let models = Models::new();
+    let report = wave::run(&game, &cart, &mf, &models, false)?;
     let played = &report.outcomes[0].envelope;
 
     let diffs = compare(&recorded, played);
@@ -98,11 +98,11 @@ fn match_file_for(env: &Value) -> Result<Value, String> {
     let mut out_seats = Vec::new();
     for s in seats {
         let w = s["weights_hash"].as_str().ok_or("a seat in this replay has no weights_hash")?;
-        let a = s["adapter_hash"].as_str().ok_or("a seat in this replay has no adapter_hash")?;
+        let a = s["manifest_hash"].as_str().ok_or("a seat in this replay has no manifest_hash")?;
         out_seats.push(json!({
             "seat": s["seat"],
             "weights_hash": w,
-            "adapter_hash": a,
+            "manifest_hash": a,
             "label": s.get("label").and_then(Value::as_str).unwrap_or(short(w)),
         }));
     }

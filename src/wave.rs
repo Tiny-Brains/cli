@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Value, json};
 
 use crate::cartridge::{Cartridge, Fault};
+use crate::cmd::Models;
 use crate::matchfile::{MatchFile, Row};
 use crate::registry::Game;
 
@@ -40,13 +41,13 @@ struct Ref {
     m: usize,
     seat: u64,
     weights_hash: String,
-    adapter_hash: String,
+    manifest_hash: String,
     strikes: u64,
     forfeited: bool,
     script: Option<Vec<Value>>,
-    /// Per-seat inference cost, accumulated across the match from each row's `infer_us`. Held in
-    /// Rust rather than in the wire `ref` (see `to_json`): Kalam carries `strikes` in its ref only
-    /// because a workflow has nowhere else to keep it, and this loop has a struct.
+    /// Per-seat inference cost, accumulated across the match. Held in Rust rather than in the wire
+    /// `ref` (see `to_json`): Kalam carries `strikes` in its ref only because a workflow has
+    /// nowhere else to keep it, and this loop has a struct.
     infer_us_total: u64,
     infer_us_max: u64,
     /// Turns this seat was actually played, so a mean survives a seat that forfeited early.
@@ -57,7 +58,7 @@ impl Ref {
     fn to_json(&self) -> Value {
         json!({
             "m": self.m, "seat": self.seat,
-            "weights_hash": self.weights_hash, "adapter_hash": self.adapter_hash,
+            "weights_hash": self.weights_hash, "manifest_hash": self.manifest_hash,
             "strikes": self.strikes, "forfeited": self.forfeited,
         })
         // Deliberately NOT the timing fields: this shape is Kalam's ref, and the loader echoes it
@@ -86,7 +87,7 @@ pub fn run(
     game: &Game,
     cart: &Cartridge,
     mf: &MatchFile,
-    axon: &axon::server::Axon,
+    models: &Models,
     verbose: bool,
 ) -> Result<Report, String> {
     let max_turns = mf.var("max_turns", game.limit("max_turns", 1000));
@@ -94,8 +95,12 @@ pub fn run(
     let budget_ops = mf.var("budget_ops", game.budget("adapter_ops_max", 1_000_000));
     let strike_ceiling = mf.var("strike_ceiling", 5);
 
-    let models = distinct_models(mf);
-    hold(axon, &models)?;
+    // Every model the match file names, loaded before a turn is played -- a graph that will not
+    // load is a different failure from one that plays badly, and finding out on turn 300 tells you
+    // less than finding out now. This is the local shape of what a replica's roster clock does.
+    for (w, m) in distinct_models(mf) {
+        models.get(&w, &m)?;
+    }
 
     // One worldgen with every seed: that is what makes this a wave and not a loop over matches, so
     // one batched play call per turn serves every match a model is in.
@@ -125,7 +130,7 @@ pub fn run(
                 m,
                 seat: s.seat,
                 weights_hash: s.weights_hash.clone(),
-                adapter_hash: s.adapter_hash.clone(),
+                manifest_hash: s.manifest_hash.clone(),
                 strikes: 0,
                 infer_us_total: 0,
                 infer_us_max: 0,
@@ -182,60 +187,74 @@ pub fn run(
         }
 
         if !playing.is_empty() {
-            let rows: Vec<Value> = playing
-                .iter()
-                .map(|v| {
-                    json!({
-                        "weights_hash": v["ref"]["weights_hash"],
-                        "adapter_hash": v["ref"]["adapter_hash"],
-                        "observation": v["view"],
-                        "ref": v["ref"],
-                    })
-                })
-                .collect();
-            let req: axon::api::PlayRequest = serde_json::from_value(json!({
-                "rows": rows, "deadline_ms": turn_ms, "budget_ops": budget_ops
-            }))
-            .map_err(|e| format!("play request: {e}"))?;
-            let played = serde_json::to_value(axon.play(req)).map_err(|e| e.to_string())?;
             report.play_calls += 1;
+        }
+        for v in &playing {
+            report.seat_turns += 1;
+            let m = v["ref"]["m"].as_u64().unwrap_or(0) as usize;
+            let seat = v["ref"]["seat"].as_u64().unwrap_or(0);
+            let (weights, manifest) = match find(&refs, m, seat) {
+                Some(r) => (r.weights_hash.clone(), r.manifest_hash.clone()),
+                None => continue,
+            };
+            let model = models.get(&weights, &manifest)?;
 
-            for r in played["rows"].as_array().cloned().unwrap_or_default() {
-                report.seat_turns += 1;
-                report.total_ops += r["ops"].as_u64().unwrap_or(0);
-                let us = r["infer_us"].as_u64().unwrap_or(0);
-                report.total_infer_us += us;
-                report.max_infer_us = report.max_infer_us.max(us);
-                let m = r["ref"]["m"].as_u64().unwrap_or(0) as usize;
-                let seat = r["ref"]["seat"].as_u64().unwrap_or(0);
-
-                // Before the action check below, which `continue`s on the common path: a seat's
-                // cost is charged whether or not the row produced a move.
-                if let Some(rf) = refs.iter_mut().find(|x| x.m == m && x.seat == seat) {
-                    rf.infer_us_total += us;
-                    rf.infer_us_max = rf.infer_us_max.max(us);
-                    rf.seat_turns += 1;
+            // ONE SEAT, ONE INFERENCE -- the shape `tb-match` has since the wave went (decision
+            // R7). The failure is the competitor's and not the run's: an adapter that throws, a
+            // graph that will not run, a head the platform cannot read all leave `action` null,
+            // which is a strike and a no-op, exactly as a node would score it.
+            let mut ops = 0;
+            let mut infer_us = 0;
+            let action = match model.infer(&v["view"], budget_ops) {
+                Ok(inf) => {
+                    ops = inf.peak_ops;
+                    infer_us = inf.infer_us;
+                    read_head(&inf, &v["view"]).unwrap_or(Value::Null)
                 }
-
-                let action = r.get("action").cloned().unwrap_or(Value::Null);
-
-                // Rule 1: the explicit form. A seat that is simply absent plays the no-op.
-                if !action.is_null() {
-                    acts.push(json!({ "m": m, "seat": seat, "action": action }));
-                    continue;
-                }
-                // Rule 3: cumulative, and the ceiling forfeits the seat for the rest of the match.
-                if let Some(rf) = refs.iter_mut().find(|x| x.m == m && x.seat == seat) {
-                    rf.strikes += 1;
-                    rf.forfeited |= rf.strikes >= strike_ceiling;
+                Err(e) => {
                     if verbose {
-                        eprintln!(
-                            "  match {m} seat {seat}: no action ({}) -- strike {}{}",
-                            r["error"].as_str().unwrap_or("?"),
-                            rf.strikes,
-                            if rf.forfeited { ", forfeited" } else { "" }
-                        );
+                        eprintln!("    seat {m}/{seat}: {e}");
                     }
+                    Value::Null
+                }
+            };
+            report.total_ops += ops;
+            report.total_infer_us += infer_us;
+            report.max_infer_us = report.max_infer_us.max(infer_us);
+            // The turn deadline is a node's to enforce and this loop cannot preempt an inference,
+            // so it is reported rather than applied: a seat that takes longer than a turn here
+            // would strike THERE, and knowing that before submitting is the whole point.
+            if verbose && infer_us > turn_ms * 1000 {
+                eprintln!(
+                    "  match {m} seat {seat}: {:.1} ms is over the {turn_ms} ms turn -- this \
+                     would strike on the ladder",
+                    infer_us as f64 / 1000.0
+                );
+            }
+
+            // Before the action check below, which `continue`s on the common path: a seat's cost
+            // is charged whether or not it produced a move.
+            if let Some(rf) = refs.iter_mut().find(|x| x.m == m && x.seat == seat) {
+                rf.infer_us_total += infer_us;
+                rf.infer_us_max = rf.infer_us_max.max(infer_us);
+                rf.seat_turns += 1;
+            }
+
+            // Rule 1: the explicit form. A seat that is simply absent plays the no-op.
+            if !action.is_null() {
+                acts.push(json!({ "m": m, "seat": seat, "action": action }));
+                continue;
+            }
+            // Rule 3: cumulative, and the ceiling forfeits the seat for the rest of the match.
+            if let Some(rf) = refs.iter_mut().find(|x| x.m == m && x.seat == seat) {
+                rf.strikes += 1;
+                rf.forfeited |= rf.strikes >= strike_ceiling;
+                if verbose {
+                    eprintln!(
+                        "  match {m} seat {seat}: no action -- strike {}{}",
+                        rf.strikes,
+                        if rf.forfeited { ", forfeited" } else { "" }
+                    );
                 }
             }
         }
@@ -287,8 +306,10 @@ pub fn run(
             "map": r["map"],
             "max_turns": max_turns,
             "engine_digest": game.engine_digest,
-            "evaluator_digest": axon::dialect::evaluator_digest(),
-            "dialect_version": axon::dialect::DIALECT_VERSION,
+            // What ran the adapters. A local run is not a node, so it says so rather than claiming
+            // a version it is not: `conform` compares the MATCH, and a replay written here that
+            // claimed to be Orion's would make a skew invisible.
+            "orion_version": format!("tinybrains-cli/datalogic-{}", crate::model::DATALOGIC_VERSION),
             "engine_ranks": engine_ranks,
             "scores": scores,
             "reason": r["reason"],
@@ -305,7 +326,7 @@ pub fn run(
                 let (total, max, turns) = timing.get(i).copied().unwrap_or((0, 0, 0));
                 json!({
                     "seat": s.seat, "label": s.label,
-                    "weights_hash": s.weights_hash, "adapter_hash": s.adapter_hash,
+                    "weights_hash": s.weights_hash, "manifest_hash": s.manifest_hash,
                     "infer_us_total": total, "infer_us_max": max, "seat_turns": turns,
                 })
             }).collect::<Vec<_>>(),
@@ -324,47 +345,32 @@ pub fn run(
         });
     }
 
-    let unload: axon::api::UnloadRequest =
-        serde_json::from_value(json!({ "models": models })).map_err(|e| e.to_string())?;
-    axon.unload(unload);
-
     Ok(report)
 }
 
-/// Every distinct model the wave needs. A scripted seat has none, and asking the loader for an
-/// empty hash would fail a teaching example that never needed ONNX at all.
-fn distinct_models(mf: &MatchFile) -> Vec<Value> {
+/// Every distinct model the match file needs. A scripted seat has none, and loading an empty hash
+/// would fail a teaching example that never needed ONNX at all.
+fn distinct_models(mf: &MatchFile) -> Vec<(String, String)> {
     let mut seen = BTreeSet::new();
     mf.rows
         .iter()
         .flat_map(|row| &row.seats)
         .filter(|s| s.script.is_none())
-        .filter(|s| seen.insert((s.weights_hash.clone(), s.adapter_hash.clone())))
-        .map(|s| json!({ "weights_hash": s.weights_hash, "adapter_hash": s.adapter_hash }))
+        .filter(|s| seen.insert((s.weights_hash.clone(), s.manifest_hash.clone())))
+        .map(|s| (s.weights_hash.clone(), s.manifest_hash.clone()))
         .collect()
 }
 
-/// Hold every model in one call, before anything is played.
-fn hold(axon: &axon::server::Axon, models: &[Value]) -> Result<(), String> {
-    if models.is_empty() {
-        return Ok(());
-    }
-    let req: axon::api::LoadRequest =
-        serde_json::from_value(json!({ "models": models, "wait_ms": 60000 }))
-            .map_err(|e| format!("load request: {e}"))?;
-    let reply = serde_json::to_value(axon.load(req)).map_err(|e| e.to_string())?;
-    for m in reply["models"].as_array().cloned().unwrap_or_default() {
-        if m["state"] != "resident" {
-            return Err(format!(
-                "the loader would not hold a model: {} {}\n  weights {}\n  adapter {}",
-                m["state"].as_str().unwrap_or("?"),
-                m["reason"].as_str().unwrap_or(""),
-                m["weights_hash"].as_str().unwrap_or("?"),
-                m["adapter_hash"].as_str().unwrap_or("?"),
-            ));
-        }
-    }
-    Ok(())
+/// The head, read the way the platform reads it (decision R3).
+fn read_head(inf: &crate::model::Inference, view: &Value) -> Option<Value> {
+    let (shape, values) = inf.f32_output("policy")?;
+    let mine: Vec<(usize, usize)> = view["mine"]
+        .as_array()?
+        .iter()
+        .map(|p| (p[0].as_u64().unwrap_or(0) as usize, p[1].as_u64().unwrap_or(0) as usize))
+        .collect();
+    let cols = view["size"][1].as_u64().unwrap_or(0) as usize;
+    crate::model::decode(shape, &values, &mine, cols).ok().map(Value::from)
 }
 
 fn find(refs: &[Ref], m: usize, seat: u64) -> Option<&Ref> {

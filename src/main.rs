@@ -2,6 +2,8 @@ mod cartridge;
 mod cmd;
 mod env;
 mod matchfile;
+mod model;
+mod onnx;
 mod registry;
 mod serve;
 mod store;

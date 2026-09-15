@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::cartridge::Cartridge;
-use crate::cmd::{axon_replica, open_game};
+use crate::cmd::{Models, open_game};
 use crate::matchfile::MatchFile;
 use crate::store::short;
 use crate::wave;
@@ -49,7 +49,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
 
     let cart = Cartridge::open(&game.component).map_err(|e| e.to_string())?;
-    let axon = axon_replica()?;
+    let models = Models::new();
 
     println!(
         "{} on {} -- {} match{}, preset {}, engine {}",
@@ -61,7 +61,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         short(&game.engine_digest)
     );
 
-    let report = wave::run(&game, &cart, &mf, &axon, verbose)?;
+    let report = wave::run(&game, &cart, &mf, &models, verbose)?;
 
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     println!();
@@ -103,27 +103,21 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let st = report.seat_turns.max(1);
         println!();
         println!(
-            "{} turns in {} batched play call{}, {} seat-turns: mean {} ops, \
-             mean {:.2} ms inference, worst {:.2} ms",
+            "{} turns, {} seat-turns: mean {} ops, mean {:.2} ms inference, worst {:.2} ms",
             report.turns_played,
-            report.play_calls,
-            if report.play_calls == 1 { "" } else { "s" },
             report.seat_turns,
             report.total_ops / st,
             report.total_infer_us as f64 / st as f64 / 1000.0,
             report.max_infer_us as f64 / 1000.0,
         );
-        // The deadline is one call's, divided among its rows -- so what a seat may spend is the
-        // turn divided by the seats in the wave, not the whole turn.
-        let seats = (report.seat_turns / report.play_calls.max(1)).max(1);
+        // THE WHOLE TURN, not a share of it. A seat is one `model_infer` call with its own
+        // `timeout_ms` since the wave went (decision R7) -- there is no shared deadline to divide,
+        // and a seat that exceeds the turn strikes by itself rather than starving the others.
         let deadline = mf.var("turn_ms", game.limit("turn_ms", 1000));
         println!(
-            "turn deadline {} ms over {} seat{} a call: {} ms a seat, worst run used {:.1}%",
+            "turn deadline {} ms a seat: worst seat-turn used {:.1}%",
             deadline,
-            seats,
-            if seats == 1 { "" } else { "s" },
-            deadline / seats,
-            report.max_infer_us as f64 * seats as f64 * 100.0 / (deadline * 1000).max(1) as f64,
+            report.max_infer_us as f64 * 100.0 / (deadline * 1000).max(1) as f64,
         );
         let cap = mf.var("budget_ops", game.budget("adapter_ops_max", 1_000_000));
         println!(

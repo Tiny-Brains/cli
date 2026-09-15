@@ -1,6 +1,7 @@
 # tinybrains -- one binary that plays a wave on a laptop. It loads a cartridge component through
-# wasmtime, evaluates adapters and ONNX graphs through axon as a library, and writes the same
-# replay envelope Kalam writes -- none of them re-implementations.
+# wasmtime, evaluates a manifest's adapters through datalogic and its graph through tract -- the
+# same two libraries an Orion node uses, in the same order -- and writes the same replay envelope
+# Kalam writes. None of them re-implementations.
 #
 # IT KNOWS NO GAME: five function names, `cartridge.json`, and the replay envelope. No Ants types,
 # no engine crate. Adding a second game is an entry in devops/games/registry.toml and no Rust.
@@ -20,10 +21,21 @@ path = "src/main.rs"
 # executes it in production.
 wasmtime = { version = "48", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
 
-# The evaluator as a library rather than over HTTP. A path dependency while the repositories are
-# siblings; `tinybrains games` prints the evaluator digest it was built against, so a stale pin is
-# visible rather than silent.
-axon = { path = "../../axon" }
+# THE EVALUATOR AND THE RUNTIME, as libraries rather than over HTTP -- and they are the node's own.
+# datalogic is what evaluates a manifest's adapters on a node (Orion reaches it through
+# dataflow-rs; the version must track what orion-server links, or `check` prices an adapter the
+# ladder would price differently). tract is what runs the graph there. Neither is a path
+# dependency any more: `axon` is gone, so this binary links no sibling and `cargo install --git`
+# works for anyone.
+datalogic-rs = { version = "5.5", features = [
+    "serde_json", "tensor", "budget",
+    "ext-string", "ext-array", "ext-object", "ext-control", "ext-math",
+] }
+datavalue-rs = { version = "0.3", features = ["tensor"] }
+bumpalo = "3"
+tract-onnx = "0.23.7"
+tract-libcli = "0.23.7"
+prost = "0.14"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
