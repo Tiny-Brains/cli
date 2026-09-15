@@ -4,7 +4,7 @@
 //! a parse error in somebody's trainer rather than a cosmetic bug.
 //!
 //! One JSON object per line in each direction. The first line out is `hello`, which carries the
-//! engine and evaluator digests the run is against — a model card that cannot name the engine it
+//! engine digest and the evaluator's name and version — a model card that cannot name the engine it
 //! was trained on is a model card that cannot be reproduced.
 //!
 //! ```jsonc
