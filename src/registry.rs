@@ -4,7 +4,8 @@
 //! a game with no database and no network -- and the digest a competitor plays against is the same
 //! string the ladder pins.
 //!
-//! An entry resolves by `path` (a sibling checkout; the digest is whatever the file hashes to) or
+//! An entry resolves by `path` (a cartridge's artifact set on disk -- a checkout's `dist/`, or an
+//! image's extracted `/artifacts/`; the digest is whatever the file hashes to) or
 //! by `release` (published artifacts, cached under `~/.cache/tinybrains/cartridges/<digest>/` and
 //! refused if they do not hash to what the registry declares).
 

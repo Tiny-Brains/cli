@@ -113,11 +113,8 @@ fn send(s: &mut TcpStream, ctype: &str, body: &[u8]) -> Result<(), String> {
 }
 
 pub fn viz_dir(game: &crate::registry::Game) -> Result<PathBuf, String> {
-    let from_checkout = game
-        .component
-        .parent()
-        .map(|d| d.join("viz").join("dist"))
-        .filter(|d| d.join("viz.js").exists());
+    let from_checkout =
+        game.component.parent().map(|d| d.join("viz")).filter(|d| d.join("viz.js").exists());
     from_checkout.ok_or_else(|| {
         format!(
             "{} ships no built viewer.\n\

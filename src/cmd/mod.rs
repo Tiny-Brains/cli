@@ -94,7 +94,7 @@ pub fn reference_observations(game: &Game) -> Result<Vec<Value>, String> {
         .ok_or_else(|| {
             format!(
                 "{} ships no reference observations, so there is nothing to validate against.\n\
-                 From a cartridge checkout that is `cargo run --bin reference`.",
+                 From a cartridge checkout that is `./build.sh`, which writes it to `dist/`.",
                 game.slug
             )
         })?;

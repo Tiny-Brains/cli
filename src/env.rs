@@ -14,7 +14,7 @@
 //!    real and are applied by Kalam, not here. `tinybrains check` and a real `tinybrains <match>`
 //!    are the gates; this is not one.
 //! 2. **Actions are positional**, over the live seats in the order `observe` returned them. That is
-//!    the game protocol's own rule (`ants/docs/protocol.md` §1), and it is *correct here* precisely
+//!    the cartridge's own rule (`ants/engine/src/lib.rs`), and it is *correct here* precisely
 //!    because a training env never forfeits a seat: every live seat is played every turn, so the
 //!    positional form never misaligns. Kalam needs the explicit `{m, seat, action}` form because it
 //!    omits forfeited seats entirely; needing it is the symptom of a rule this file does not have.
@@ -198,7 +198,7 @@ impl<'a> Pool<'a> {
     /// `actions` is positionally aligned with the last `observe`. An element is either the compact
     /// form — one character per ant, in `mine`'s order, exactly as a replay delta writes it — or
     /// the protocol's own array of strings. The compact form is four times smaller on the wire and
-    /// is not an invention: `ants/src/replay.rs` already writes a turn that way.
+    /// is not an invention: `ants/engine/src/replay.rs` already writes a turn that way.
     pub fn step(&mut self, actions: &[Value]) -> Result<Vec<Value>, String> {
         let want: usize = self.last_counts.iter().sum();
         if actions.len() != want {
