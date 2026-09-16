@@ -4,7 +4,7 @@
 #
 # WHY THIS EXISTS. Three repositories need this binary and none of them should need a Rust
 # toolchain to get it: `docs` regenerates the book's lesson replays with it, and `drill` and
-# `ants-baselines` are competitor-facing and run it to play matches.
+# `ants/baselines` are competitor-facing and run it to play matches.
 #
 # IT LINKS NO SIBLING ANY MORE. It used to need a named build context for `axon`, because
 # `Cargo.toml` said `path = "../../axon"` and that is outside this build context. With axon deleted
