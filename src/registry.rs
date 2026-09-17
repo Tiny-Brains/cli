@@ -73,7 +73,7 @@ impl Registry {
     }
 
     /// `games.toml` in the working directory first: a project carries its own games the way it
-    /// carries its own matches, so a clone of `drill` needs no environment variable.
+    /// carries its own matches, so a clone of a game's starter kit needs no environment variable.
     pub fn find() -> Result<PathBuf, String> {
         if let Ok(p) = std::env::var("TINYBRAINS_REGISTRY") {
             return Ok(PathBuf::from(p));
@@ -88,7 +88,8 @@ impl Registry {
         ];
         candidates.into_iter().flatten().find(|p| p.exists()).ok_or_else(|| {
             "no games registry.\n\
-                 A project carries its own as `games.toml`; clone drill for one that works,\n\
+                 A project carries its own as `games.toml`; clone a starter kit for one that works\n\
+                 (github.com/Tiny-Brains/<game>-starter),\n\
                  or point TINYBRAINS_REGISTRY at a registry.toml."
                 .to_string()
         })
