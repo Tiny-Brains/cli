@@ -5,7 +5,7 @@
 //! string the ladder pins.
 //!
 //! An entry resolves by `path` (a cartridge's artifact set on disk -- a checkout's `dist/`, or an
-//! image's extracted `/artifacts/`; the digest is whatever the file hashes to) or by `release` (the
+//! unpacked release; the digest is whatever the file hashes to) or by `release` (the
 //! same tree published as ONE archive on a GitHub release, unpacked under
 //! `~/.cache/tinybrains/cartridges/<archive digest>/`, and refused unless the archive hashes to what
 //! the registry declares and the component inside it hashes to the declared `engine`).
@@ -141,7 +141,7 @@ impl Registry {
     }
 }
 
-/// A cartridge's artifact set, laid out as `ants/dist/` and the image's `/artifacts/` both are.
+/// A cartridge's artifact set, laid out as `ants/dist/` and a release archive both are.
 fn read_artifact_set(slug: &str, name: &str, dir: &Path, source: String) -> Result<Game, String> {
     let component = find_component(dir)?;
     let bytes = std::fs::read(&component)

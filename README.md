@@ -120,11 +120,11 @@ tinybrains --version
 ```toml
 [games.ants]
 name = "Ants"
-path = "../ants/dist"            # an artifact set on disk: a checkout's dist/, or an image's /artifacts/
+path = "../ants/dist"            # an artifact set on disk: a checkout's dist/, or an unpacked release
 ```
 
 — the digest is whatever the component hashes to, and is reported — or a pinned release, as
-`ants/tools/release.sh` prints it and every starter kit carries it:
+an ants release's notes print it and every starter kit carries it:
 
 ```toml
 [games.ants]

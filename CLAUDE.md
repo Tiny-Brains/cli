@@ -47,8 +47,8 @@ entry is `path = "<ants checkout>/dist"`.
 
 **It knows no game.** It never links an engine crate and never names a cartridge's types: it knows
 five function names, `cartridge.json`, and the replay envelope, and resolves a game from a registry
-— a `path` to an artifact set on disk (a checkout's `dist/`, or the ants image's `/artifacts/`
-copied out; the digest is *reported*), or a `release`: that same tree as one `.tar.gz` on a GitHub release,
+— a `path` to an artifact set on disk (a checkout's `dist/`, or an unpacked ants release; the
+digest is *reported*), or a `release`: that same tree as one `.tar.gz` on a GitHub release,
 fetched once into the cache and refused unless the archive and the component hash to the registry's
 `artifacts.sha256` and `engine`. **Every `<game>-starter` pins a release, and must work with no
 sibling checkout at all** (devops N21, N22) — a registry feature that only works from a `path` is
