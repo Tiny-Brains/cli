@@ -7,11 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `cli` is **the `tinybrains` binary**: one Rust crate that plays a TinyBrains match on a laptop,
 makes admission's own measurements, replays a ladder match to prove agreement, and hosts a
 cartridge as a training environment. It is one of the repos checked out side by side under
-`tinybrains/`; see `../CLAUDE.md` for the platform map. **It is self-contained**: it builds, checks
+`tinybrains/`; see `../CLAUDE.md` for the platform map, and `DECISIONS.md` for the decisions that
+shaped this binary (47, 48, N23). **It is self-contained**: it builds, checks
 and releases from this repository alone, links no sibling, and reads no path outside itself.
 
 It lived at `devops/cli` until 17 September 2026 and moved here with its history
-(`devops/docs/decisions.md` N23). A dated record elsewhere that says `devops/cli` means this
+(N23, in `DECISIONS.md`). A dated record elsewhere that says `devops/cli` means this
 repository. `README.md` is the operator's page and its **Status** block holds the open work.
 
 ## Commands

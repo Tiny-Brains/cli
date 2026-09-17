@@ -97,7 +97,7 @@ Who runs it: [ants-starter](https://github.com/Tiny-Brains/ants-starter)'s CI an
 book's quickstart and *Testing* chapter in [web/docs](https://github.com/Tiny-Brains/web/tree/main/docs),
 `ants/baselines` (`env` for training, `adapt` for the conformance test), and `web/docs`' image
 build, which downloads the Linux release archive (`CLI_VERSION`) to play the lesson replays. Nothing
-in [DevOps](https://github.com/Tiny-Brains/devops) builds or runs it.
+in the platform's images builds or runs it.
 
 ## Interface
 
@@ -260,6 +260,6 @@ this repository's log and in DevOps' README Status.
 
 ## More
 
-- [DevOps](https://github.com/Tiny-Brains/devops) — `docs/decisions.md` N23 is why this repository exists; 47 is why `env` is a verb.
+- [`DECISIONS.md`](DECISIONS.md) — N23 is why this repository exists; 47 is why `env` is a verb.
 - [ants-starter](https://github.com/Tiny-Brains/ants-starter) — where to run it from.
 - Apache-2.0: see [LICENSE](LICENSE).
