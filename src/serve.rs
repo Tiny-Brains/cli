@@ -67,9 +67,11 @@ fn respond(s: &mut TcpStream, viz: &Path, replay_json: &str) -> Result<(), Strin
         "/" => send(s, "text/html; charset=utf-8", PAGE.as_bytes()),
         "/replay.json" => send(s, "application/json", replay_json.as_bytes()),
         p => {
-            // Traversal is refused rather than sanitised: one directory, no exceptions.
+            // Traversal is refused rather than sanitised: one directory, no exceptions. A drive
+            // (`C:`) or a backslash is refused too, because on Windows `join` treats either as a
+            // way out of `viz`, and no file of a viewer bundle is named with one.
             let rel = p.trim_start_matches('/');
-            if rel.contains("..") {
+            if rel.contains("..") || rel.contains(':') || rel.contains('\\') {
                 return send(s, "text/plain", b"no");
             }
             let file = viz.join(rel);

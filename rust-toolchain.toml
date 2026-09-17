@@ -1,6 +1,5 @@
-# EXACT, and the same rustc `Dockerfile` names. The release workflow, the check workflow and the
-# image all build with this toolchain, so a binary on a release and the one in the image were
-# compiled by one compiler. Bump both lines together.
+# EXACT. The check workflow, the release workflow and a local build all compile with this rustc, so
+# the binary on a release was built by the compiler this repository was tested with.
 [toolchain]
 channel = "1.98.1"
 components = ["rustfmt", "clippy"]

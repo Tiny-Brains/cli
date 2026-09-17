@@ -31,8 +31,10 @@ sum() {
   exit 1
 }
 
+# Homebrew does not run on Windows, so the two .zip archives have no place here. macOS is Apple
+# silicon and macOS 26 or newer only, which is what the release builds: the formula refuses anything
+# else by name rather than failing on a missing URL.
 mac_arm=$(sum aarch64-apple-darwin)
-mac_intel=$(sum x86_64-apple-darwin)
 linux_arm=$(sum aarch64-unknown-linux-gnu)
 linux_intel=$(sum x86_64-unknown-linux-gnu)
 
@@ -46,14 +48,11 @@ class Tinybrains < Formula
   license "Apache-2.0"
 
   on_macos do
-    on_arm do
-      url "${base}/tinybrains-aarch64-apple-darwin.tar.gz"
-      sha256 "${mac_arm}"
-    end
-    on_intel do
-      url "${base}/tinybrains-x86_64-apple-darwin.tar.gz"
-      sha256 "${mac_intel}"
-    end
+    depends_on arch: :arm64
+    depends_on macos: :tahoe
+
+    url "${base}/tinybrains-aarch64-apple-darwin.tar.gz"
+    sha256 "${mac_arm}"
   end
 
   on_linux do

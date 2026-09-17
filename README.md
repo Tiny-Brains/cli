@@ -7,6 +7,8 @@ itself links — and writes the same replay envelope Kalam writes.
 
 ## Install
 
+macOS and Linux, with Homebrew:
+
 ```sh
 brew tap tiny-brains/cli https://github.com/Tiny-Brains/cli
 brew install tiny-brains/cli/tinybrains
@@ -14,23 +16,31 @@ brew install tiny-brains/cli/tinybrains
 
 Or take the archive for your platform from the
 [latest release](https://github.com/Tiny-Brains/cli/releases/latest), check it against that
-release's `SHA256SUMS`, and put `tinybrains` on your `PATH`:
+release's `SHA256SUMS`, and put the binary on your `PATH`:
 
 ```sh
-curl -fsSLO https://github.com/Tiny-Brains/cli/releases/latest/download/tinybrains-aarch64-apple-darwin.tar.gz
-tar -xzf tinybrains-aarch64-apple-darwin.tar.gz tinybrains && sudo mv tinybrains /usr/local/bin/
+curl -fsSLO https://github.com/Tiny-Brains/cli/releases/latest/download/tinybrains-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf tinybrains-x86_64-unknown-linux-gnu.tar.gz tinybrains && sudo mv tinybrains /usr/local/bin/
+```
+
+```powershell
+Invoke-WebRequest https://github.com/Tiny-Brains/cli/releases/latest/download/tinybrains-x86_64-pc-windows-msvc.zip -OutFile tinybrains.zip
+Expand-Archive tinybrains.zip -DestinationPath "$env:LOCALAPPDATA\tinybrains"   # then add that folder to PATH
 ```
 
 | Archive | Platform |
 |---|---|
-| `tinybrains-aarch64-apple-darwin.tar.gz` | macOS, Apple silicon |
-| `tinybrains-x86_64-apple-darwin.tar.gz` | macOS, Intel |
+| `tinybrains-aarch64-apple-darwin.tar.gz` | macOS 26 or newer, Apple silicon |
 | `tinybrains-aarch64-unknown-linux-gnu.tar.gz` | Linux arm64, glibc 2.35 or newer |
 | `tinybrains-x86_64-unknown-linux-gnu.tar.gz` | Linux x86-64, glibc 2.35 or newer |
+| `tinybrains-aarch64-pc-windows-msvc.zip` | Windows on Arm, 64-bit |
+| `tinybrains-x86_64-pc-windows-msvc.zip` | Windows x86-64 |
 
-A file fetched by a **browser** on macOS is quarantined and refused as unsigned; `curl` and Homebrew
-are not affected, and `xattr -d com.apple.quarantine tinybrains` clears it. From source, with a Rust
-toolchain: `cargo install --locked --git https://github.com/Tiny-Brains/cli`.
+Every build is 64-bit, and there is **no Intel macOS build**. The binaries are not signed: a file a
+**browser** downloads on macOS is quarantined (`xattr -d com.apple.quarantine tinybrains` clears it),
+and Windows SmartScreen may ask before the first run; `curl`, `Invoke-WebRequest` and Homebrew are
+not affected. From source, with a Rust toolchain, on any platform Rust and wasmtime support:
+`cargo install --locked --git https://github.com/Tiny-Brains/cli`.
 
 Then run it from a game's starter kit, which carries the `games.toml` it reads:
 
@@ -51,7 +61,7 @@ tinybrains view replays/self-play.json         # watch it
 - The one Rust copy of Kalam's wave loop (`src/wave.rs`), and `conform`, which proves it agrees.
 - The match-file parser (`src/matchfile.rs`), which is the format's only specification.
 - Resolving a game from a registry: a `path` to an artifact set on disk, or a pinned `release`.
-- Its release: the binaries, the Homebrew formula in `Formula/`, and the artifact image.
+- Its release: the binaries and the Homebrew formula in `Formula/`.
 
 **It does not**
 
@@ -86,9 +96,8 @@ competitor's repository                          GitHub releases
 Who runs it: [ants-starter](https://github.com/Tiny-Brains/ants-starter)'s CI and README, the
 book's quickstart and *Testing* chapter in [web/docs](https://github.com/Tiny-Brains/web/tree/main/docs),
 `ants/baselines` (`env` for training, `adapt` for the conformance test), and `web/docs`' image
-build, which takes the binary from this repository's image (`CLI_REF`) to play the lesson replays.
-[DevOps](https://github.com/Tiny-Brains/devops) builds that image from a checkout of this
-repository (`CLI_DIR`) and runs nothing else of it.
+build, which downloads the Linux release archive (`CLI_VERSION`) to play the lesson replays. Nothing
+in [DevOps](https://github.com/Tiny-Brains/devops) builds or runs it.
 
 ## Interface
 
@@ -146,7 +155,6 @@ Orion workflow and `src/wave.rs` as Rust, which is why `conform` exists.
 cargo build --release                              # rust-toolchain.toml pins the compiler
 cargo fmt --check && cargo clippy --locked --release -- -D warnings
 cd ../ants-starter && ../cli/target/release/tinybrains matches/self-play.json   # a registry to run against
-docker build -t tinybrains/cli:dev .               # the artifact image: /artifacts/bin/tinybrains
 ```
 
 There are **no unit tests**. `.github/workflows/check.yml` runs format, lint and a locked build on
@@ -162,12 +170,14 @@ To play against a local cartridge build, point `TINYBRAINS_REGISTRY` at a regist
 
 ```sh
 # bump `version` in Cargo.toml, commit to main, push, then:
-git tag v0.2.0 && git push origin v0.2.0
+gh workflow run release.yml                  # the rehearsal: every target built and played, nothing published
+git tag v0.2.0 && git push origin v0.2.0     # the release
 ```
 
 `.github/workflows/release.yml` refuses a tag that disagrees with `Cargo.toml` or is not on `main`;
-builds the four targets (the Intel macOS one cross-compiled on Apple silicon) and plays the starter
-kit with each binary its runner can execute; publishes the archives and `SHA256SUMS` on a GitHub
+builds the five targets, each natively on its own runner (`macos-26`, `ubuntu-22.04`,
+`ubuntu-22.04-arm`, `windows-2025`, `windows-11-arm`), and plays the starter kit with every binary;
+publishes the archives and `SHA256SUMS` on a GitHub
 release; renders `Formula/tinybrains.rb` from the checksums **it downloads from that release** with
 `scripts/formula.sh` and commits it to `main`; then installs through Homebrew from the tap and runs
 the formula's test.
@@ -199,7 +209,6 @@ src/serve.rs           `view`'s local server for the cartridge's own viewer
 wit/                   the plugin ABI the component exports
 scripts/formula.sh     the Homebrew formula, rendered from a release's SHA256SUMS
 Formula/               the tap: written by the release workflow, never by hand
-Dockerfile             the artifact image web/docs builds from
 .github/workflows/     check.yml on every push; release.yml on a v* tag
 ```
 
@@ -213,8 +222,9 @@ Dockerfile             the artifact image web/docs builds from
   which is why its actions can be positional, and why a result from it is not a result.
 - **The binary carries no path of the machine that built it.** No built-in registry, no
   `CARGO_MANIFEST_DIR` lookups: a released binary runs on someone else's laptop.
-- **The archive names are an interface.** `tinybrains-<target>.tar.gz`, flat, with `tinybrains` at
-  the top: the formula, `releases/latest/download/` links and the book's install lines name them.
+- **The archive names are an interface.** `tinybrains-<target>.tar.gz`, or `.zip` for Windows,
+  flat, with the binary at the top: the formula, `releases/latest/download/` links, ants-starter's
+  CI, `web/docs/Dockerfile` and the book's install lines name them.
 - **A tag is a version and is never re-cut.** `v<version>` equals `Cargo.toml`, and a bad release is
   a new version, because the formula and every pinned download name the archive's sha256.
 
@@ -225,10 +235,13 @@ Dockerfile             the artifact image web/docs builds from
 the stack never ran it, its one devops coupling was a built-in fallback to `../games/registry.toml`
 that baked the build machine's path into every binary, and a competitor needed a Rust toolchain to
 install it. That fallback is gone — a registry is the project's, and `devops/games/registry.toml`
-is now read only where it is named. `tinybrains --version` is new. A `v*` tag now publishes macOS and Linux binaries for arm64 and
-x86-64 and a Homebrew formula in this repository's own tap; ants-starter's CI downloads the release
-instead of compiling. The artifact image is unchanged and still what `web/docs` builds from; DevOps
-builds it from `CLI_DIR`. Earlier history is in this repository's log and in DevOps' README Status.
+is now read only where it is named. `tinybrains --version` is new, and `view` refuses a drive or a
+backslash in a request path, which Windows would otherwise let out of the viewer's directory. A `v*`
+tag publishes 64-bit binaries for macOS 26+ on Apple silicon (no Intel macOS build), Linux and
+Windows on arm64 and x86-64, and a Homebrew formula in this repository's own tap; ants-starter's CI
+downloads the release instead of compiling. **There is no artifact image any more**: `web/docs`
+downloads the pinned Linux release, and DevOps' `cli` build service is gone. Earlier history is in
+this repository's log and in DevOps' README Status.
 
 ## More
 

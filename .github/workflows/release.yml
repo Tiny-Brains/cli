@@ -1,33 +1,44 @@
 # A RELEASE IS A TAG: push `v<version>` and this builds the binaries, publishes them on a GitHub
 # release, and points the Homebrew formula in `Formula/` at them.
 #
-#   # bump `version` in Cargo.toml, commit to main, push, then
+#   # bump `version` in Cargo.toml, commit to main, push, rehearse, then
+#   gh workflow run release.yml          # REHEARSAL: every target built and played, nothing published
 #   git tag v0.2.0 && git push origin v0.2.0
 #
-# FOUR TARGETS, and each archive is `tinybrains-<target>.tar.gz` with no version in the name, so
-# `releases/latest/download/tinybrains-<target>.tar.gz` is a link that never goes stale:
+# FIVE TARGETS, all 64-bit, each archive named for its target with no version, so
+# `releases/latest/download/<archive>` is a link that never goes stale:
 #
-#   aarch64-apple-darwin        macOS, Apple silicon
-#   x86_64-apple-darwin         macOS, Intel -- cross-compiled on the Apple-silicon runner
-#   aarch64-unknown-linux-gnu   Linux arm64, built on 22.04 so it runs on glibc 2.35 and newer
-#   x86_64-unknown-linux-gnu    Linux x86-64, the same
+#   aarch64-apple-darwin        tinybrains-aarch64-apple-darwin.tar.gz        macOS 26 or newer, Apple silicon
+#   aarch64-unknown-linux-gnu   tinybrains-aarch64-unknown-linux-gnu.tar.gz   glibc 2.35 or newer
+#   x86_64-unknown-linux-gnu    tinybrains-x86_64-unknown-linux-gnu.tar.gz    glibc 2.35 or newer
+#   aarch64-pc-windows-msvc     tinybrains-aarch64-pc-windows-msvc.zip        Windows on Arm
+#   x86_64-pc-windows-msvc      tinybrains-x86_64-pc-windows-msvc.zip
+#
+# There is no Intel macOS build, by decision. Every target is built natively on its own runner, so
+# every binary plays the starter kit before anything is published.
 #
 # A TAG IS NEVER RE-CUT. The formula and anyone's pinned download name the archive's sha256, so
-# replacing an asset under an existing tag breaks every one of them. A bad release is a new version.
+# replacing an asset under an existing tag breaks every one of them. A bad release is a new version,
+# which is what the rehearsal is for.
 
 name: release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # Refuse a tag that disagrees with Cargo.toml (the binary would print one version and the release
   # name another), or that is not on main (the formula commit would point main at a build of
-  # something main never held).
+  # something main never held). A rehearsal only reads the version.
   meta:
     runs-on: ubuntu-latest
     outputs:
@@ -40,27 +51,33 @@ jobs:
       - id: version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::tag $GITHUB_REF_NAME, but Cargo.toml says version $version"
-            exit 1
-          fi
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::$GITHUB_REF_NAME is not on main"
-            exit 1
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+              echo "::error::tag $GITHUB_REF_NAME, but Cargo.toml says version $version"
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "::error::$GITHUB_REF_NAME is not on main"
+              exit 1
+            fi
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   build:
     needs: meta
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
-          - { target: aarch64-apple-darwin,      runner: macos-15 }
-          - { target: x86_64-apple-darwin,       runner: macos-15 }
-          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm }
-          - { target: x86_64-unknown-linux-gnu,  runner: ubuntu-22.04 }
+          - { target: aarch64-apple-darwin,      runner: macos-26,         archive: tar.gz }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm, archive: tar.gz }
+          - { target: x86_64-unknown-linux-gnu,  runner: ubuntu-22.04,     archive: tar.gz }
+          - { target: aarch64-pc-windows-msvc,   runner: windows-11-arm,   archive: zip }
+          - { target: x86_64-pc-windows-msvc,    runner: windows-2025,     archive: zip }
     runs-on: ${{ matrix.runner }}
+    env:
+      # The oldest macOS the binary loads on. Ignored by every other target.
+      MACOSX_DEPLOYMENT_TARGET: '26.0'
     steps:
       - uses: actions/checkout@v4
 
@@ -68,8 +85,15 @@ jobs:
       - name: Toolchain
         run: |
           if ! command -v rustup >/dev/null; then
-            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            if [ "$RUNNER_OS" = Windows ]; then
+              curl -fsSLo "$RUNNER_TEMP/rustup-init.exe" \
+                "https://static.rust-lang.org/rustup/dist/${{ matrix.target }}/rustup-init.exe"
+              "$RUNNER_TEMP/rustup-init.exe" -y --profile minimal --default-toolchain none
+              echo "$USERPROFILE\\.cargo\\bin" >> "$GITHUB_PATH"
+            else
+              curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+              echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            fi
             export PATH="$HOME/.cargo/bin:$PATH"
           fi
           rustup toolchain install
@@ -80,23 +104,23 @@ jobs:
 
       # What the starter kit's CI asks of the binary, asked of THIS binary on THIS platform: the
       # cartridge release fetched and checked, admission's checks, and a whole match through the
-      # engine. The Intel macOS build is cross-compiled, so it runs only where Rosetta can run it.
+      # engine.
       - name: Play the starter kit with this binary
         run: |
-          bin="$PWD/target/${{ matrix.target }}/release/tinybrains"
-          if [ "${{ matrix.target }}" = x86_64-apple-darwin ] && ! "$bin" --version >/dev/null 2>&1; then
-            echo "::notice::no Rosetta on this runner; x86_64-apple-darwin is built but not smoke-tested"
-            exit 0
-          fi
-          "$bin" --version | grep -qx "tinybrains ${{ needs.meta.outputs.version }}"
+          exe=tinybrains
+          if [ "$RUNNER_OS" = Windows ]; then exe=tinybrains.exe; fi
+          bin="$PWD/target/${{ matrix.target }}/release/$exe"
+          "$bin" --version | tr -d '\r' | grep -qx "tinybrains ${{ needs.meta.outputs.version }}"
           git clone --depth 1 https://github.com/Tiny-Brains/ants-starter "$RUNNER_TEMP/starter"
           cd "$RUNNER_TEMP/starter"
           "$bin" games
           "$bin" check model.onnx manifest.json
           "$bin" matches/self-play.json
 
-      # Flat, so Homebrew's `bin.install "tinybrains"` and a plain `tar -xzf` both find it at the top.
-      - name: Package
+      # Flat, so Homebrew's `bin.install "tinybrains"`, `tar -xzf` and Expand-Archive all find the
+      # binary at the top.
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
         run: |
           name="tinybrains-${{ matrix.target }}"
           stage="$RUNNER_TEMP/$name"
@@ -104,14 +128,26 @@ jobs:
           cp "target/${{ matrix.target }}/release/tinybrains" LICENSE README.md "$stage/"
           tar -C "$stage" -czf "$name.tar.gz" tinybrains LICENSE README.md
 
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $name = "tinybrains-${{ matrix.target }}"
+          $stage = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/tinybrains.exe", LICENSE, README.md -Destination $stage
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath "$name.zip"
+
       - uses: actions/upload-artifact@v4
         with:
           name: tinybrains-${{ matrix.target }}
-          path: tinybrains-${{ matrix.target }}.tar.gz
+          path: tinybrains-${{ matrix.target }}.${{ matrix.archive }}
           if-no-files-found: error
 
-  # Only once every target built: a release missing a platform is a formula that fails there.
+  # Only once every target built and played: a release missing a platform is a formula or a download
+  # link that fails there.
   publish:
+    if: github.ref_type == 'tag'
     needs: [meta, build]
     runs-on: ubuntu-latest
     permissions:
@@ -126,7 +162,7 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: |
-          sha256sum tinybrains-*.tar.gz > SHA256SUMS
+          sha256sum tinybrains-*.tar.gz tinybrains-*.zip > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create the release
@@ -135,29 +171,39 @@ jobs:
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.meta.outputs.version }}
         run: |
+          base="https://github.com/Tiny-Brains/cli/releases/download/v${VERSION}"
           cat > "$RUNNER_TEMP/notes.md" <<NOTES
           ## Install
+
+          macOS (Apple silicon, macOS 26 or newer) and Linux, with Homebrew:
 
           \`\`\`sh
           brew tap tiny-brains/cli https://github.com/Tiny-Brains/cli
           brew install tiny-brains/cli/tinybrains
           \`\`\`
 
-          Or take the archive for your platform below, check it against \`SHA256SUMS\`, and put
-          \`tinybrains\` on your \`PATH\`:
+          Or take the archive for your platform below, check it against \`SHA256SUMS\`, and put the
+          binary on your \`PATH\`:
 
           \`\`\`sh
-          curl -fsSLO https://github.com/Tiny-Brains/cli/releases/download/v${VERSION}/tinybrains-aarch64-apple-darwin.tar.gz
-          tar -xzf tinybrains-aarch64-apple-darwin.tar.gz tinybrains
+          curl -fsSLO ${base}/tinybrains-x86_64-unknown-linux-gnu.tar.gz
+          tar -xzf tinybrains-x86_64-unknown-linux-gnu.tar.gz tinybrains
           ./tinybrains --version
+          \`\`\`
+
+          \`\`\`powershell
+          Invoke-WebRequest ${base}/tinybrains-x86_64-pc-windows-msvc.zip -OutFile tinybrains.zip
+          Expand-Archive tinybrains.zip -DestinationPath tinybrains
+          .\\tinybrains\\tinybrains.exe --version
           \`\`\`
 
           | Archive | Platform |
           |---|---|
-          | \`tinybrains-aarch64-apple-darwin.tar.gz\` | macOS, Apple silicon |
-          | \`tinybrains-x86_64-apple-darwin.tar.gz\` | macOS, Intel |
-          | \`tinybrains-aarch64-unknown-linux-gnu.tar.gz\` | Linux arm64, glibc 2.35+ |
-          | \`tinybrains-x86_64-unknown-linux-gnu.tar.gz\` | Linux x86-64, glibc 2.35+ |
+          | \`tinybrains-aarch64-apple-darwin.tar.gz\` | macOS 26 or newer, Apple silicon |
+          | \`tinybrains-aarch64-unknown-linux-gnu.tar.gz\` | Linux arm64, glibc 2.35 or newer |
+          | \`tinybrains-x86_64-unknown-linux-gnu.tar.gz\` | Linux x86-64, glibc 2.35 or newer |
+          | \`tinybrains-aarch64-pc-windows-msvc.zip\` | Windows on Arm, 64-bit |
+          | \`tinybrains-x86_64-pc-windows-msvc.zip\` | Windows x86-64 |
 
           Then clone a starter kit and play: https://github.com/Tiny-Brains/ants-starter
           NOTES
@@ -168,6 +214,7 @@ jobs:
 
   # A job of its own, so a failed push re-runs without trying to create the release twice.
   formula:
+    if: github.ref_type == 'tag'
     needs: [meta, publish]
     runs-on: ubuntu-latest
     permissions:
@@ -201,8 +248,9 @@ jobs:
   # The install a person runs, run: tap this repository, install from the formula just pushed, and
   # run the formula's own test.
   brew:
+    if: github.ref_type == 'tag'
     needs: [meta, formula]
-    runs-on: macos-15
+    runs-on: macos-26
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
     steps:

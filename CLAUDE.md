@@ -20,7 +20,6 @@ repository. `README.md` is the operator's page and its **Status** block holds th
 cargo build --release                                  # rust-toolchain.toml pins rustc exactly
 cargo fmt --check                                      # rustfmt.toml: max_width 100
 cargo clippy --locked --release -- -D warnings         # CI gates on this
-docker build -t tinybrains/cli:dev .                   # the artifact image web/docs builds from
 
 # run it where a registry is: a starter kit carries one
 cd ../ants-starter
@@ -33,6 +32,7 @@ cd ../ants-starter
 ../cli/target/release/tinybrains env --waves 4 --matches-per-wave 16
 
 # a release: bump `version` in Cargo.toml, commit to main, push, then
+gh workflow run release.yml                            # rehearsal: all five targets built + played, nothing published
 git tag v0.2.0 && git push origin v0.2.0
 scripts/formula.sh 0.2.0 SHA256SUMS                    # what release.yml renders into Formula/
 ```
@@ -47,8 +47,8 @@ entry is `path = "<ants checkout>/dist"`.
 
 **It knows no game.** It never links an engine crate and never names a cartridge's types: it knows
 five function names, `cartridge.json`, and the replay envelope, and resolves a game from a registry
-— a `path` to an artifact set on disk (a checkout's `dist/`, or an image's `/artifacts/` copied
-out; the digest is *reported*), or a `release`: that same tree as one `.tar.gz` on a GitHub release,
+— a `path` to an artifact set on disk (a checkout's `dist/`, or the ants image's `/artifacts/`
+copied out; the digest is *reported*), or a `release`: that same tree as one `.tar.gz` on a GitHub release,
 fetched once into the cache and refused unless the archive and the component hash to the registry's
 `artifacts.sha256` and `engine`. **Every `<game>-starter` pins a release, and must work with no
 sibling checkout at all** (devops N21, N22) — a registry feature that only works from a `path` is
@@ -92,12 +92,19 @@ actually runs. Bump them together, and only with Orion.
 ## Releasing
 
 A `v*` tag runs `.github/workflows/release.yml`: refuse a tag that disagrees with `Cargo.toml` or is
-not on `main` → build four targets (`aarch64`/`x86_64` × `apple-darwin`/`unknown-linux-gnu`; Intel
-macOS is cross-compiled on the Apple-silicon runner, Linux is built on 22.04 for glibc 2.35) → play
-`ants-starter` with each binary its runner can execute → publish `tinybrains-<target>.tar.gz` and
+not on `main` → build five 64-bit targets, each natively on its own runner — `aarch64-apple-darwin`
+(`macos-26`, `MACOSX_DEPLOYMENT_TARGET=26.0`), `{aarch64,x86_64}-unknown-linux-gnu` (22.04, so glibc
+2.35) and `{aarch64,x86_64}-pc-windows-msvc` (`windows-11-arm`, `windows-2025`) → play
+`ants-starter` with every binary → publish `tinybrains-<target>.tar.gz` (`.zip` for Windows) and
 `SHA256SUMS` on a GitHub release → render `Formula/tinybrains.rb` with `scripts/formula.sh` from the
 **downloaded** `SHA256SUMS` and commit it to `main` → `brew tap` this repository, install, and run
-the formula's test.
+the formula's test. `gh workflow run release.yml` runs the build and play half alone and publishes
+nothing — **rehearse before tagging**, because a tag that fails half-way is a version number spent.
+
+**There is no Intel macOS build, and no 32-bit build of anything**, by decision. The formula says so
+with `depends_on arch: :arm64` and `depends_on macos: :tahoe` rather than failing on a missing URL.
+**There is no Docker image either**: a CLI is installed, not run as a container, and the one Docker
+build that needs it (`web/docs`) downloads the Linux release by `CLI_VERSION`.
 
 Things that break silently if forgotten:
 
@@ -107,10 +114,14 @@ Things that break silently if forgotten:
   checksum error on every install.
 - **Never re-cut a tag.** The formula, the release's `SHA256SUMS` and anyone's pinned download name
   the archive's digest. A bad release is a new version.
-- **The archive name and shape are an interface.** `tinybrains-<target>.tar.gz`, no version in the
-  name, `tinybrains` at the top level. The formula's `bin.install`, `releases/latest/download/`
-  links, ants-starter's CI and the book's install lines all rely on it.
-- **`rust-toolchain.toml` and the Dockerfile's `RUST_VERSION` are one pin written twice.** Bump both.
+- **The archive name and shape are an interface.** `tinybrains-<target>.tar.gz` or `.zip`, no
+  version in the name, the binary at the top level. The formula's `bin.install`,
+  `releases/latest/download/` links, ants-starter's CI, `web/docs/Dockerfile` and the book's install
+  lines all rely on it.
+- **Windows is a target, so paths are not strings.** `view` refuses `:` and `\` in a request path
+  because `Path::join` on Windows lets either escape the viewer's directory; the model store names
+  files `sha256-<hex>` because `:` is not a legal filename there. The release plays the starter kit on
+  both Windows runners, and that is the only place Windows is exercised.
 - **The formula job pushes to `main` with `GITHUB_TOKEN`.** That push starts no workflow, by
   GitHub's rule, so `check.yml` does not run on formula commits. Branch protection that forbids the
   bot pushing would fail that job after the release is already public; re-run the job, not the tag.
@@ -123,8 +134,8 @@ Things that break silently if forgotten:
   `maps/`, `reference/`, `viz/` — is read by `registry.rs`, `serve.rs` and `cmd/`. A rename inside
   `ants/dist` is a change here too, and reaches competitors only through a new ants release and a
   CLI release together.
-- **Consumers of the binary**: ants-starter's `check.yml` downloads the release archive for
-  `x86_64-unknown-linux-gnu`; `web/docs/Dockerfile` copies `/artifacts/bin/tinybrains` out of
-  `CLI_REF`, which devops' compose builds from `CLI_DIR` (default `../cli`); `ants/baselines` finds
-  it on `PATH` or through `TINYBRAINS`. The book (`web/docs/src/quickstart.md`, `models/testing.md`)
+- **Consumers of the binary**: ants-starter's `check.yml` downloads the latest Linux release archive
+  for its runner; `web/docs/Dockerfile` downloads the Linux archive for its build platform at a pinned
+  `CLI_VERSION` and checks it against that release's `SHA256SUMS` — **bump it there** when the lessons
+  need a newer CLI; `ants/baselines` finds it on `PATH` or through `TINYBRAINS`. The book (`web/docs/src/quickstart.md`, `models/testing.md`)
   and web's `/start` page carry the install lines.
