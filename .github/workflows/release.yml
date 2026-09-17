@@ -1,0 +1,214 @@
+# A RELEASE IS A TAG: push `v<version>` and this builds the binaries, publishes them on a GitHub
+# release, and points the Homebrew formula in `Formula/` at them.
+#
+#   # bump `version` in Cargo.toml, commit to main, push, then
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# FOUR TARGETS, and each archive is `tinybrains-<target>.tar.gz` with no version in the name, so
+# `releases/latest/download/tinybrains-<target>.tar.gz` is a link that never goes stale:
+#
+#   aarch64-apple-darwin        macOS, Apple silicon
+#   x86_64-apple-darwin         macOS, Intel -- cross-compiled on the Apple-silicon runner
+#   aarch64-unknown-linux-gnu   Linux arm64, built on 22.04 so it runs on glibc 2.35 and newer
+#   x86_64-unknown-linux-gnu    Linux x86-64, the same
+#
+# A TAG IS NEVER RE-CUT. The formula and anyone's pinned download name the archive's sha256, so
+# replacing an asset under an existing tag breaks every one of them. A bad release is a new version.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  # Refuse a tag that disagrees with Cargo.toml (the binary would print one version and the release
+  # name another), or that is not on main (the formula commit would point main at a build of
+  # something main never held).
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but Cargo.toml says version $version"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: meta
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin,      runner: macos-15 }
+          - { target: x86_64-apple-darwin,       runner: macos-15 }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm }
+          - { target: x86_64-unknown-linux-gnu,  runner: ubuntu-22.04 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml names the exact compiler. No cache: a release is built cold.
+      - name: Toolchain
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      # What the starter kit's CI asks of the binary, asked of THIS binary on THIS platform: the
+      # cartridge release fetched and checked, admission's checks, and a whole match through the
+      # engine. The Intel macOS build is cross-compiled, so it runs only where Rosetta can run it.
+      - name: Play the starter kit with this binary
+        run: |
+          bin="$PWD/target/${{ matrix.target }}/release/tinybrains"
+          if [ "${{ matrix.target }}" = x86_64-apple-darwin ] && ! "$bin" --version >/dev/null 2>&1; then
+            echo "::notice::no Rosetta on this runner; x86_64-apple-darwin is built but not smoke-tested"
+            exit 0
+          fi
+          "$bin" --version | grep -qx "tinybrains ${{ needs.meta.outputs.version }}"
+          git clone --depth 1 https://github.com/Tiny-Brains/ants-starter "$RUNNER_TEMP/starter"
+          cd "$RUNNER_TEMP/starter"
+          "$bin" games
+          "$bin" check model.onnx manifest.json
+          "$bin" matches/self-play.json
+
+      # Flat, so Homebrew's `bin.install "tinybrains"` and a plain `tar -xzf` both find it at the top.
+      - name: Package
+        run: |
+          name="tinybrains-${{ matrix.target }}"
+          stage="$RUNNER_TEMP/$name"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release/tinybrains" LICENSE README.md "$stage/"
+          tar -C "$stage" -czf "$name.tar.gz" tinybrains LICENSE README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tinybrains-${{ matrix.target }}
+          path: tinybrains-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  # Only once every target built: a release missing a platform is a formula that fails there.
+  publish:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tinybrains-*
+          merge-multiple: true
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum tinybrains-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" <<NOTES
+          ## Install
+
+          \`\`\`sh
+          brew tap tiny-brains/cli https://github.com/Tiny-Brains/cli
+          brew install tiny-brains/cli/tinybrains
+          \`\`\`
+
+          Or take the archive for your platform below, check it against \`SHA256SUMS\`, and put
+          \`tinybrains\` on your \`PATH\`:
+
+          \`\`\`sh
+          curl -fsSLO https://github.com/Tiny-Brains/cli/releases/download/v${VERSION}/tinybrains-aarch64-apple-darwin.tar.gz
+          tar -xzf tinybrains-aarch64-apple-darwin.tar.gz tinybrains
+          ./tinybrains --version
+          \`\`\`
+
+          | Archive | Platform |
+          |---|---|
+          | \`tinybrains-aarch64-apple-darwin.tar.gz\` | macOS, Apple silicon |
+          | \`tinybrains-x86_64-apple-darwin.tar.gz\` | macOS, Intel |
+          | \`tinybrains-aarch64-unknown-linux-gnu.tar.gz\` | Linux arm64, glibc 2.35+ |
+          | \`tinybrains-x86_64-unknown-linux-gnu.tar.gz\` | Linux x86-64, glibc 2.35+ |
+
+          Then clone a starter kit and play: https://github.com/Tiny-Brains/ants-starter
+          NOTES
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag \
+            --title "tinybrains ${VERSION}" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+
+  # A job of its own, so a failed push re-runs without trying to create the release twice.
+  formula:
+    needs: [meta, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Render it from the published checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS --dir "$RUNNER_TEMP"
+          mkdir -p Formula
+          scripts/formula.sh "${{ needs.meta.outputs.version }}" "$RUNNER_TEMP/SHA256SUMS" > Formula/tinybrains.rb
+          cat Formula/tinybrains.rb
+
+      - name: Commit it to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/tinybrains.rb
+          if git diff --cached --quiet; then
+            echo "formula already points at $GITHUB_REF_NAME"
+            exit 0
+          fi
+          git commit -m "Point the Homebrew formula at $GITHUB_REF_NAME"
+          git push origin HEAD:main
+
+  # The install a person runs, run: tap this repository, install from the formula just pushed, and
+  # run the formula's own test.
+  brew:
+    needs: [meta, formula]
+    runs-on: macos-15
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+    steps:
+      - name: Install with Homebrew
+        run: |
+          brew tap tiny-brains/cli https://github.com/Tiny-Brains/cli
+          brew install tiny-brains/cli/tinybrains
+          brew test tiny-brains/cli/tinybrains
+          tinybrains --version | grep -qx "tinybrains ${{ needs.meta.outputs.version }}"

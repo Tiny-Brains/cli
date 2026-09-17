@@ -1,0 +1,48 @@
+# THE PASS THIS REPOSITORY DEFINES, ON EVERY PUSH.
+#
+# There are no unit tests and no test runner (CLAUDE.md says why: `tinybrains conform` is the check
+# that matters, and it needs a replay the ladder wrote). What a push can prove is that the crate is
+# formatted, lints clean, builds from the lockfile -- and that the binary still does what the one
+# repository every competitor clones asks of it: `ants-starter`'s own CI, run with THIS build. That
+# clone is a test input and not a build input; nothing here compiles against it.
+
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml names the exact compiler; `toolchain install` with no argument reads it.
+      - name: Toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --locked --release -- -D warnings
+
+      - name: Build
+        run: cargo build --locked --release
+
+      # The starter pins the Ants release in its games.toml, so this also exercises the release
+      # fetch: download, both digests, unpack into the cache.
+      - name: Play the starter kit with this build
+        run: |
+          bin="$PWD/target/release/tinybrains"
+          "$bin" --version
+          git clone --depth 1 https://github.com/Tiny-Brains/ants-starter "$RUNNER_TEMP/starter"
+          cd "$RUNNER_TEMP/starter"
+          "$bin" games
+          "$bin" check model.onnx manifest.json
+          "$bin" matches/self-play.json

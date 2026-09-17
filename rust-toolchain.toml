@@ -1,0 +1,7 @@
+# EXACT, and the same rustc `Dockerfile` names. The release workflow, the check workflow and the
+# image all build with this toolchain, so a binary on a release and the one in the image were
+# compiled by one compiler. Bump both lines together.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

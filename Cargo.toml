@@ -4,13 +4,19 @@
 # Kalam writes. None of them re-implementations.
 #
 # IT KNOWS NO GAME: five function names, `cartridge.json`, and the replay envelope. No Ants types,
-# no engine crate. Adding a second game is an entry in devops/games/registry.toml and no Rust.
+# no engine crate. Adding a second game is an entry in a project's `games.toml` and no Rust.
+#
+# `version` IS THE RELEASE. A `v<version>` tag builds the binaries and the Homebrew formula
+# (.github/workflows/release.yml), and the workflow refuses a tag that disagrees with this line.
 
 [package]
 name = "tinybrains"
 version = "0.1.0"
 edition = "2024"
 publish = false
+description = "Play, check and watch TinyBrains matches on a laptop"
+license = "Apache-2.0"
+repository = "https://github.com/Tiny-Brains/cli"
 
 [[bin]]
 name = "tinybrains"

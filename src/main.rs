@@ -22,6 +22,7 @@ tinybrains -- run a TinyBrains match locally
   tinybrains adapt <model.onnx> <manifest>   dump the tensors an adapter produces
   tinybrains conform <replay.json>           replay a recorded match here, and diff
   tinybrains env [...]                       the cartridge as a training environment
+  tinybrains --version                       which release this is
 
 Options
   --out DIR      where replays go (default: ./replays)
@@ -40,6 +41,10 @@ fn dispatch() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
         print!("{USAGE}");
+        return Ok(());
+    }
+    if args[0] == "-V" || args[0] == "--version" {
+        println!("tinybrains {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     match args[0].as_str() {

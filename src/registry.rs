@@ -1,6 +1,6 @@
 //! Which games exist, and where their artifacts are.
 //!
-//! The same four things `loader/run.sh` writes onto the `games` row, in a file, so the CLI resolves
+//! The same four things devops' `compose/loader/run.sh` writes onto the `games` row, in a file, so the CLI resolves
 //! a game with no database and no network -- and the digest a competitor plays against is the same
 //! string the ladder pins.
 //!
@@ -74,16 +74,19 @@ impl Registry {
 
     /// `games.toml` in the working directory first: a project carries its own games the way it
     /// carries its own matches, so a clone of a game's starter kit needs no environment variable.
+    ///
+    /// There is no built-in registry. There used to be one, `CARGO_MANIFEST_DIR/../games/`, which
+    /// was devops' copy while this crate lived there -- and which baked the BUILD machine's path
+    /// into every binary, so a released one looked for a CI runner's directory on a competitor's
+    /// laptop. A registry is the project's, never the binary's.
     pub fn find() -> Result<PathBuf, String> {
         if let Ok(p) = std::env::var("TINYBRAINS_REGISTRY") {
             return Ok(PathBuf::from(p));
         }
-        let built_in = Path::new(env!("CARGO_MANIFEST_DIR")).join("../games/registry.toml");
         let cached = store::root().map(|r| r.join("registry.toml"));
         let candidates = [
             Some(PathBuf::from("games.toml")),
             Some(PathBuf::from("tinybrains.toml")),
-            Some(built_in),
             cached.ok(),
         ];
         candidates.into_iter().flatten().find(|p| p.exists()).ok_or_else(|| {
