@@ -42,6 +42,9 @@ serde_json = "1"
 toml = "0.8"
 sha2 = "0.10"
 ureq = { version = "2", features = ["json"] }
+# A release is one archive of the artifact set; both are already in the tree through tract.
+tar = "0.4"
+flate2 = "1"
 dirs = "5"
 
 [profile.release]

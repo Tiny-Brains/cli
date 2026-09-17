@@ -5,9 +5,14 @@
 //! string the ladder pins.
 //!
 //! An entry resolves by `path` (a cartridge's artifact set on disk -- a checkout's `dist/`, or an
-//! image's extracted `/artifacts/`; the digest is whatever the file hashes to) or
-//! by `release` (published artifacts, cached under `~/.cache/tinybrains/cartridges/<digest>/` and
-//! refused if they do not hash to what the registry declares).
+//! image's extracted `/artifacts/`; the digest is whatever the file hashes to) or by `release` (the
+//! same tree published as ONE archive on a GitHub release, unpacked under
+//! `~/.cache/tinybrains/cartridges/<archive digest>/`, and refused unless the archive hashes to what
+//! the registry declares and the component inside it hashes to the declared `engine`).
+//!
+//! One archive rather than a file per artifact, because the consumers read a tree: `check` wants
+//! `reference/`, `view` wants `viz/`, `maps export` wants `maps/`. A release that pinned only the
+//! component and the manifest could play a match and do nothing else, which is what it used to do.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -33,10 +38,12 @@ pub struct GameEntry {
     pub repo: Option<String>,
     #[serde(default)]
     pub release: Option<String>,
+    /// The artifact set as a `.tar.gz`, attached to `release`.
     #[serde(default)]
-    pub component: Option<Artifact>,
+    pub artifacts: Option<Artifact>,
+    /// The component's digest: the string the ladder pins as `games.active_engine_digest`.
     #[serde(default)]
-    pub manifest: Option<Artifact>,
+    pub engine: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -96,51 +103,55 @@ impl Registry {
 
         if let Some(rel) = &entry.path {
             let checkout = base.join(rel);
-            let component = find_component(&checkout)?;
-            let bytes = std::fs::read(&component)
-                .map_err(|e| format!("cannot read {}: {e}", component.display()))?;
-            let maps = checkout.join("maps");
-            return Ok(Game {
-                slug: slug.to_string(),
-                name: entry.name.clone(),
-                engine_digest: store::digest(&bytes),
-                component,
-                manifest: read_json(&checkout.join("cartridge.json"))?,
-                maps_dir: maps.is_dir().then_some(maps),
-                source: format!("checkout {}", checkout.display()),
-            });
+            let source = format!("checkout {}", checkout.display());
+            return read_artifact_set(slug, &entry.name, &checkout, source);
         }
 
-        let (repo, release) = match (&entry.repo, &entry.release) {
-            (Some(r), Some(v)) => (r, v),
-            _ => {
-                return Err(format!(
-                    "game '{slug}' declares neither a `path` checkout nor a `repo` + `release`"
-                ));
-            }
-        };
-        let component = entry
-            .component
-            .as_ref()
-            .ok_or_else(|| format!("game '{slug}' declares no component artifact"))?;
-        let manifest = entry
-            .manifest
-            .as_ref()
-            .ok_or_else(|| format!("game '{slug}' declares no manifest artifact"))?;
-
-        let component_path = fetch(repo, release, component)?;
-        let manifest_path = fetch(repo, release, manifest)?;
-
-        Ok(Game {
-            slug: slug.to_string(),
-            name: entry.name.clone(),
-            engine_digest: component.sha256.clone(),
-            component: component_path,
-            manifest: read_json(&manifest_path)?,
-            maps_dir: None,
-            source: format!("{repo}@{release}"),
-        })
+        let (repo, release, archive, engine) =
+            match (&entry.repo, &entry.release, &entry.artifacts, &entry.engine) {
+                (Some(r), Some(v), Some(a), Some(e)) => (r, v, a, e),
+                (None, None, None, None) => {
+                    return Err(format!(
+                        "game '{slug}' declares neither a `path` checkout nor a `release`"
+                    ));
+                }
+                _ => {
+                    return Err(format!(
+                        "game '{slug}': a release needs all four of `repo`, `release`, \
+                         `artifacts` and `engine`"
+                    ));
+                }
+            };
+        let dir = fetch_release(repo, release, archive)?;
+        let game = read_artifact_set(slug, &entry.name, &dir, format!("release {repo}@{release}"))?;
+        // The archive's digest pins every byte in it, so this cannot fail on a download. It fails
+        // on a registry whose two digests were copied from different releases -- and the engine
+        // is the one a reader compares with the ladder, so it is the one that must not lie.
+        if &game.engine_digest != engine {
+            return Err(format!(
+                "game '{slug}': release {release} carries engine\n  {}\nand the registry declares\n  {engine}",
+                game.engine_digest
+            ));
+        }
+        Ok(game)
     }
+}
+
+/// A cartridge's artifact set, laid out as `ants/dist/` and the image's `/artifacts/` both are.
+fn read_artifact_set(slug: &str, name: &str, dir: &Path, source: String) -> Result<Game, String> {
+    let component = find_component(dir)?;
+    let bytes = std::fs::read(&component)
+        .map_err(|e| format!("cannot read {}: {e}", component.display()))?;
+    let maps = dir.join("maps");
+    Ok(Game {
+        slug: slug.to_string(),
+        name: name.to_string(),
+        engine_digest: store::digest(&bytes),
+        component,
+        manifest: read_json(&dir.join("cartridge.json"))?,
+        maps_dir: maps.is_dir().then_some(maps),
+        source,
+    })
 }
 
 fn read_json(path: &Path) -> Result<Value, String> {
@@ -164,19 +175,24 @@ fn find_component(checkout: &Path) -> Result<PathBuf, String> {
     })
 }
 
-/// Fetch one release artifact into the cache, keyed by its declared digest, and refuse anything
-/// that does not hash to it.
-fn fetch(repo: &str, release: &str, art: &Artifact) -> Result<PathBuf, String> {
+/// Fetch a release's artifact archive once, and unpack it into the cache under its own digest.
+///
+/// Nothing reaches the cache that did not hash to the declared digest, and nothing is unpacked in
+/// place: the tree is written beside its final name and renamed into it, so an interrupted run
+/// leaves no half a cartridge that a later run would take for a whole one.
+fn fetch_release(repo: &str, release: &str, art: &Artifact) -> Result<PathBuf, String> {
     let hex = art
         .sha256
         .strip_prefix("sha256:")
+        .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
         .ok_or_else(|| format!("{}: sha256 must be 'sha256:<64 hex>'", art.file))?;
-    let dir = store::root()?.join("cartridges").join(hex);
-    let path = dir.join(&art.file);
-    if path.exists() {
-        return Ok(path);
+    let cartridges = store::root()?.join("cartridges");
+    let dir = cartridges.join(hex);
+    if dir.is_dir() {
+        return Ok(dir);
     }
     let url = format!("https://github.com/{repo}/releases/download/{release}/{}", art.file);
+    eprintln!("fetching {url}");
     let bytes = store::fetch_url(&url)?;
     let got = store::digest(&bytes);
     if got != art.sha256 {
@@ -185,9 +201,41 @@ fn fetch(repo: &str, release: &str, art: &Artifact) -> Result<PathBuf, String> {
             art.sha256
         ));
     }
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(path)
+
+    let partial = cartridges.join(format!("{hex}.partial-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&partial);
+    std::fs::create_dir_all(&partial).map_err(|e| format!("{}: {e}", partial.display()))?;
+    if let Err(e) = unpack(&bytes, &partial) {
+        let _ = std::fs::remove_dir_all(&partial);
+        return Err(format!("{url}: {e}"));
+    }
+    if let Err(e) = std::fs::rename(&partial, &dir) {
+        let _ = std::fs::remove_dir_all(&partial);
+        // Another run unpacked the same digest first; its tree is the same bytes.
+        if !dir.is_dir() {
+            return Err(format!("{}: {e}", dir.display()));
+        }
+    }
+    Ok(dir)
+}
+
+/// Files and directories only. The digest already vouches for the bytes; this refuses the entry
+/// kinds an artifact set never has, so a link cannot point a read outside the cache.
+fn unpack(gz: &[u8], into: &Path) -> Result<(), String> {
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(gz));
+    for entry in archive.entries().map_err(|e| format!("not a .tar.gz: {e}"))? {
+        let mut entry = entry.map_err(|e| format!("not a .tar.gz: {e}"))?;
+        let kind = entry.header().entry_type();
+        if !(kind.is_file() || kind.is_dir()) {
+            let name = entry.path().map(|p| p.display().to_string()).unwrap_or_default();
+            return Err(format!("'{name}' is not a file or a directory"));
+        }
+        let name = entry.path().map(|p| p.display().to_string()).unwrap_or_default();
+        if !entry.unpack_in(into).map_err(|e| format!("{name}: {e}"))? {
+            return Err(format!("'{name}' would unpack outside the cartridge"));
+        }
+    }
+    Ok(())
 }
 
 impl Game {
