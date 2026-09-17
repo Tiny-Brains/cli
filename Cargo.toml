@@ -22,36 +22,46 @@ repository = "https://github.com/Tiny-Brains/cli"
 name = "tinybrains"
 path = "src/main.rs"
 
+# EVERY DEPENDENCY IS HERE FOR A CALL THE BINARY MAKES, WITH ONLY THE FEATURES THAT CALL NEEDS.
+# Compile time is wasmtime + cranelift and tract, which are the product; everything else is kept to
+# the minimum so it adds little to them. Before adding a crate, check `cargo tree -i` for one
+# already in the tree, and whether a crate here re-exports it (datalogic re-exports `bumpalo` and
+# `datavalue`). What was cut, and why, is README.md's Status.
 [dependencies]
 # Matching what orion-server runs, so the component is executed here by the same runtime that
-# executes it in production.
+# executes it in production. `runtime` + `cranelift` to compile and call it, `component-model` for
+# a plugin component's world. No cache, no parallel compilation, no debugging, no WAT.
 wasmtime = { version = "48", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
 
 # THE EVALUATOR AND THE RUNTIME, as libraries rather than over HTTP -- and they are the node's own.
 # datalogic is what evaluates a manifest's adapters on a node (Orion reaches it through
 # dataflow-rs; the version must track what orion-server links, or `check` prices an adapter the
-# ladder would price differently). tract is what runs the graph there. Neither is a path
-# dependency any more: `axon` is gone, so this binary links no sibling and `cargo install --git`
-# works for anyone.
-datalogic-rs = { version = "5.5", features = [
+# ladder would price differently). The `ext-*` operator sets are the node's and cost no
+# dependencies; dropping one is an adapter that passes on the ladder and fails here.
+datalogic-rs = { version = "5.5", default-features = false, features = [
     "serde_json", "tensor", "budget",
     "ext-string", "ext-array", "ext-object", "ext-control", "ext-math",
 ] }
-datavalue-rs = { version = "0.3", features = ["tensor"] }
-bumpalo = "3"
-tract-onnx = "0.23.7"
-tract-libcli = "0.23.7"
-prost = "0.14"
+# tract is what runs the graph there. Only `tract-onnx`: the one helper once taken from
+# `tract-libcli` (a shape spec parser) pulled in clap, tflite, npy, the GPU and Metal backends.
+tract-onnx = { version = "0.23.7", default-features = false }
+# The trait that decodes `tract_onnx::pb`; the same prost tract-onnx builds.
+prost = { version = "0.14", default-features = false, features = ["std"] }
 
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
-sha2 = "0.10"
-ureq = { version = "2", features = ["json"] }
-# A release is one archive of the artifact set; both are already in the tree through tract.
-tar = "0.4"
-flate2 = "1"
-dirs = "5"
+serde = { version = "1", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+# games.toml is read, never written: the parser and serde, no writer.
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
+# Already in the tree through cranelift.
+sha2 = { version = "0.10", default-features = false }
+# HTTPS GET of a release archive or a model URL, and nothing else: rustls with ring and the bundled
+# roots. 3.x rather than 2.x because 2.x parses URLs with `url`, which is `idna` and some twenty ICU
+# crates.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+# A cartridge release is one .tar.gz of the artifact set; both are already in the tree through
+# tract. No xattr: an artifact set has no extended attributes to restore.
+tar = { version = "0.4", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [profile.release]
 opt-level = 2

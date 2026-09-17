@@ -230,6 +230,21 @@ Formula/               the tap: written by the release workflow, never by hand
 
 ## Status
 
+**17 September 2026 (later) — the dependency set is the minimum, with features gated.** Before the
+first release, every direct dependency was checked for what the binary actually calls:
+`tract-libcli` went — one shape-spec helper, now `input_fact` in `src/model.rs`, had been pulling in
+clap, tflite, npy/zip and tract's GPU and Metal backends — and so did `dirs` (four lines of
+environment lookups in `src/store.rs`, same directories, and no second `windows-sys` on Windows).
+`bumpalo` and `datavalue-rs` are taken through datalogic's re-exports; `ureq` is 3.x with rustls
+only, which drops `url`/`idna` and some twenty ICU crates; `toml` is 1.x with the parser and serde
+only, which also ends 0.9's two copies of `winnow`; `tar` has no xattr, and `serde`, `serde_json`,
+`prost`, `sha2` and `flate2` build without default features. The build went from 276 crates to 207
+on macOS, 269 to 212 on Linux and 273 to 211 on Windows; `Cargo.lock` from 342 packages to 257. What
+remains is wasmtime with cranelift and tract, which are the product, and the duplicates left are
+inside them. **Nothing a match produces moved**: the starter kit's `check` (323,559 operations
+worst case) and both its match files give replays identical to the previous build's in every field
+but the inference timings.
+
 **17 September 2026 — the CLI is a repository of its own, and ships binaries.** It moved out of
 `devops/cli` with its history (`git filter-repo`, 25 commits), because nothing in it was deployment:
 the stack never ran it, its one devops coupling was a built-in fallback to `../games/registry.toml`

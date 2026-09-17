@@ -89,6 +89,13 @@ by datalogic on a node and by datalogic here, so a skew is a local `check` pass 
 refusal. The constant is what `games` and `env`'s hello print; `Cargo.toml`'s `datalogic-rs` is what
 actually runs. Bump them together, and only with Orion.
 
+**Dependencies are the minimum, with features gated** (README Status, 17 September). Compile time
+is wasmtime + cranelift and tract; everything else in `Cargo.toml` is there for a call the binary
+makes, with `default-features = false`. Before adding a crate, look for it in `cargo tree -i` and
+in a re-export (datalogic re-exports `bumpalo` and `datavalue`), and never take a command-line or
+tooling crate for one helper — `tract-libcli` cost some forty crates for a shape parser. Check a
+change with `cargo tree -e normal,build --target all -d` for new duplicates.
+
 ## Releasing
 
 A `v*` tag runs `.github/workflows/release.yml`: refuse a tag that disagrees with `Cargo.toml` or is

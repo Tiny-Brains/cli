@@ -234,14 +234,7 @@ impl Model {
                 .iter()
                 .position(|n| *n == decl.name)
                 .ok_or_else(|| format!("the graph has no input named '{}'", decl.name))?;
-            let spec = format!(
-                "{},{}",
-                decl.shape.iter().map(Dim::render).collect::<Vec<_>>().join(","),
-                decl.dtype
-            );
-            let fact = tract_libcli::tensor::parse_spec(&symbols, &spec).map_err(|e| {
-                format!("input '{}': {spec} is not a fact tract takes: {e}", decl.name)
-            })?;
+            let fact = input_fact(&symbols, decl)?;
             model.set_input_fact(index, fact).map_err(|e| format!("input '{}': {e}", decl.name))?;
             in_order.push(index);
         }
@@ -281,7 +274,7 @@ impl Model {
     /// One inference over one observation: every input adapter evaluated under `budget`, the graph
     /// run, the outputs checked against the manifest through the call's own bindings.
     pub fn infer(&self, observation: &Value, budget: u64) -> Result<Inference, String> {
-        let arena = bumpalo::Bump::new();
+        let arena = datalogic_rs::bumpalo::Bump::new();
         let mut bindings = Bindings::default();
         let mut tensors: Vec<TValue> = vec![TValue::from(Tensor::default()); self.in_order.len()];
         let mut ops = 0u64;
@@ -340,7 +333,7 @@ impl Model {
 
     /// The tensor one adapter produces, without running the graph.
     pub fn adapt(&self, observation: &Value, budget: u64) -> Result<Vec<AdaptedInput>, String> {
-        let arena = bumpalo::Bump::new();
+        let arena = datalogic_rs::bumpalo::Bump::new();
         let mut out = Vec::new();
         for (i, decl) in self.inputs.iter().enumerate() {
             let metered = self
@@ -427,14 +420,47 @@ pub fn decode(
 
 // ---------------------------------------------------------------------------- plumbing
 
-fn as_tensor<'a>(v: &'a DataValue<'a>) -> Option<&'a datavalue_rs::DataTensor<'a>> {
+/// A declared input as the fact tract type-checks the graph against: its dtype, and its shape with
+/// each named dimension a symbol of the model's own scope.
+///
+/// The same fact `tract_libcli::tensor::parse_spec` built from `"<dim>,...,<dtype>"`, whose dtype
+/// table this copies -- without the crate, which is most of tract's command line. A dtype outside
+/// the table is refused by name, where the spec parser would have read it as one more dimension.
+fn input_fact(symbols: &SymbolScope, decl: &Decl) -> Result<InferenceFact, String> {
+    let dt = match decl.dtype.to_ascii_lowercase().as_str() {
+        "bool" => DatumType::Bool,
+        "f16" => DatumType::F16,
+        "f32" => DatumType::F32,
+        "f64" => DatumType::F64,
+        "i8" => DatumType::I8,
+        "i16" => DatumType::I16,
+        "i32" => DatumType::I32,
+        "i64" => DatumType::I64,
+        "u8" => DatumType::U8,
+        "u16" => DatumType::U16,
+        "u32" => DatumType::U32,
+        "u64" => DatumType::U64,
+        other => {
+            return Err(format!("input '{}': dtype '{other}' is not one tract takes", decl.name));
+        }
+    };
+    let shape = decl
+        .shape
+        .iter()
+        .map(|d| symbols.parse_tdim(d.render()))
+        .collect::<TractResult<Vec<TDim>>>()
+        .map_err(|e| format!("input '{}': a dimension tract does not take: {e}", decl.name))?;
+    Ok(InferenceFact::dt_shape(dt, shape))
+}
+
+fn as_tensor<'a>(v: &'a DataValue<'a>) -> Option<&'a datalogic_rs::datavalue::DataTensor<'a>> {
     match v {
         DataValue::Tensor(t) => Some(t),
         _ => None,
     }
 }
 
-fn to_tract(t: &datavalue_rs::DataTensor<'_>) -> Result<Tensor, String> {
+fn to_tract(t: &datalogic_rs::datavalue::DataTensor<'_>) -> Result<Tensor, String> {
     let shape = t.shape();
     let bytes = t.data();
     let dt = match t.dtype().name() {

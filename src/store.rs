@@ -14,9 +14,26 @@ pub fn root() -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("TINYBRAINS_HOME") {
         return Ok(PathBuf::from(p));
     }
-    dirs::cache_dir()
+    cache_dir()
         .map(|d| d.join("tinybrains"))
         .ok_or_else(|| "no cache directory -- set TINYBRAINS_HOME".to_string())
+}
+
+/// The user's cache directory by the platform's convention: `%LOCALAPPDATA%` on Windows,
+/// `~/Library/Caches` on macOS, `$XDG_CACHE_HOME` (when absolute) or `~/.cache` elsewhere.
+///
+/// The answer the `dirs` crate gave, so an existing cache is where it was -- without the crate,
+/// which on Windows compiled a second, older `windows-sys` beside wasmtime's.
+fn cache_dir() -> Option<PathBuf> {
+    let var = |name| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if cfg!(windows) {
+        return var("LOCALAPPDATA");
+    }
+    let home = var("HOME");
+    if cfg!(target_os = "macos") {
+        return home.map(|h| h.join("Library").join("Caches"));
+    }
+    var("XDG_CACHE_HOME").filter(|p| p.is_absolute()).or_else(|| home.map(|h| h.join(".cache")))
 }
 
 pub fn models_dir() -> Result<PathBuf, String> {
@@ -79,10 +96,14 @@ pub fn bytes_of(spec: &str, base: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(&p).map_err(|e| format!("cannot read {}: {e}", p.display()))
 }
 
+/// Redirects are followed (a GitHub release download is one) and a status of 400 or above is an
+/// error. No size limit: ureq's default of 10 MB is smaller than a model or a cartridge may be, and
+/// every caller hashes what it received against a declared digest anyway.
 pub fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
     let resp = ureq::get(url).call().map_err(|e| format!("GET {url} failed: {e}"))?;
-    let mut buf = Vec::new();
-    std::io::Read::read_to_end(&mut resp.into_reader(), &mut buf)
-        .map_err(|e| format!("GET {url}: {e}"))?;
-    Ok(buf)
+    resp.into_body()
+        .into_with_config()
+        .limit(u64::MAX)
+        .read_to_vec()
+        .map_err(|e| format!("GET {url}: {e}"))
 }
