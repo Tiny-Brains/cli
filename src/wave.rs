@@ -7,7 +7,10 @@
 //!
 //! 1. `actions` uses the explicit `{m, seat, action}` form. The positional form only aligns while
 //!    every live seat is played, and a forfeited seat is not sent at all.
-//! 2. A forfeited seat is omitted from the play call entirely -- omission *is* the no-op.
+//! 2. A forfeited seat is omitted from the play call entirely -- omission *is* the no-op. So is a
+//!    seat with no ants: from three seats up an eliminated colony stays in the match with an empty
+//!    `mine`, has nothing to order and so nothing to miss, and is asked again the turn its hive
+//!    spawns one (Kalam's `seat_plays`).
 //! 3. Strikes are cumulative across the match, not consecutive, so a seat cannot game the rule by
 //!    hiccupping every fourth turn.
 //! 4. A forfeited seat's rank is `engine_rank + seat_count`, so two forfeits cannot tie with a seat
@@ -182,6 +185,9 @@ pub fn run(
                         "action": scripted_orders(script, turn_index, ants),
                     }));
                 }
+                // Rule 2 again: no ants, nothing to ask. Kalam does not infer such a seat, so it
+                // neither strikes it nor charges it a seat-turn, and neither does this.
+                None if v["view"]["mine"].as_array().is_some_and(|a| a.is_empty()) => {}
                 None => playing.push(v),
             }
         }
