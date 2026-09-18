@@ -281,10 +281,12 @@ impl Model {
         let mut peak = 0u64;
 
         for (i, decl) in self.inputs.iter().enumerate() {
+            let t = crate::timing::start();
             let metered = self
                 .engine
                 .evaluate_metered(&self.adapters[i], observation, &arena, budget)
                 .map_err(|e| format!("adapter for input '{}' failed: {e}", decl.name))?;
+            crate::timing::stop(crate::timing::P::Adapter, t);
             ops += metered.ops;
             peak = peak.max(metered.ops);
             let t = as_tensor(metered.value)
@@ -301,11 +303,14 @@ impl Model {
         }
 
         let started = std::time::Instant::now();
-        let out = self
-            .plan
-            .run(tensors.into_iter().collect::<TVec<_>>())
-            .map_err(|e| format!("the graph failed to run: {e}"))?;
+        let inputs = tensors.into_iter().collect::<TVec<_>>();
+        let out = if crate::timing::profiling_nodes() {
+            self.run_profiled(inputs)?
+        } else {
+            self.plan.run(inputs).map_err(|e| format!("the graph failed to run: {e}"))?
+        };
         let infer_us = started.elapsed().as_micros() as u64;
+        crate::timing::stop(crate::timing::P::Graph, started);
 
         let mut outputs = Vec::with_capacity(self.outputs.len());
         for (i, decl) in self.outputs.iter().enumerate() {
@@ -324,6 +329,22 @@ impl Model {
             outputs.push((decl.name.clone(), dtype.to_string(), shape, t.as_bytes().to_vec()));
         }
         Ok(Inference { outputs, ops, peak_ops: peak, infer_us })
+    }
+
+    /// The same run, one node at a time, so a slow graph can say which of its nodes is slow.
+    /// `TINYBRAINS_PROFILE_NODES` only: this is the state-machine path rather than `plan.run`, and the
+    /// timer per node makes the total a little larger than the run it is explaining.
+    fn run_profiled(&self, inputs: TVec<TValue>) -> Result<TVec<TValue>, String> {
+        let mut state = tract_onnx::tract_core::plan::SimpleState::new(&self.plan)
+            .map_err(|e| format!("the graph could not be stepped: {e}"))?;
+        state
+            .run_plan_with_eval(inputs, |ctx, op_state, node, input| {
+                let t = std::time::Instant::now();
+                let r = tract_onnx::tract_core::plan::eval(ctx, op_state, node, input);
+                crate::timing::node(&node.op().name(), t.elapsed().as_nanos() as u64);
+                r
+            })
+            .map_err(|e| format!("the graph failed to run: {e}"))
     }
 
     /// The inputs a manifest declares, for `tinybrains adapt`.

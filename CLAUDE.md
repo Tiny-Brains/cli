@@ -85,6 +85,14 @@ claims (`K_WAVE` in `kalam/scripts/gen-kalam.py`) plus the vars it runs under. T
 §Match files (`web/docs/src/models/testing.md`) is its competitor-facing copy, and no check compares
 them: a field added or derived differently here is an edit there too.
 
+**`src/timing.rs` is the run's own clock, and its two groups are not one list.** `Registry`..`Write`
+are disjoint and sum to the run; `Instantiate`..`DecodeOut` decompose the cartridge calls among them
+and double-count on purpose. Adding a phase to the first group without taking it out of another is
+how a breakdown starts summing to more than the clock it came from — `--timings` prints an
+`unaccounted` row against the measured wall clock, which is what makes that visible. Recording is
+unconditional; only the printing is behind the flag. Note that `infer_us`, which goes into every
+replay's `seats` and into `check --json`, is `plan.run` alone and not the adapter that fed it.
+
 **`DATALOGIC_VERSION` in `src/model.rs` must track what orion-server links.** An adapter is priced
 by datalogic on a node and by datalogic here, so a skew is a local `check` pass and a remote
 refusal. The constant is what `games` and `env`'s hello print; `Cargo.toml`'s `datalogic-rs` is what

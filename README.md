@@ -102,7 +102,7 @@ in the platform's images builds or runs it.
 ## Interface
 
 ```text
-tinybrains <match.json> [--out DIR] [-v]   play a wave; write one replay per row
+tinybrains <match.json> [--out DIR] [-v]   play a wave; write one replay per row  [--timings]
 tinybrains games                           what is registered, and at which digest
 tinybrains maps [GAME]                     the boards a game is played on
 tinybrains maps export [GAME] [DIR]        write those boards out as files
@@ -141,6 +141,20 @@ be scripted (`"script": ["E", "E", "-"]`). The book's *Testing* §Match files is
 copy of `src/matchfile.rs`.
 
 `TINYBRAINS_HOME` moves the cache (models and cartridges) off `~/.cache/tinybrains`.
+
+**`--timings`** breaks a run into the phases it actually spent, against the wall clock it measured,
+so the row that is *not* a phase ("unaccounted") is visible rather than folded into the last one.
+The first group — registry, cartridge compile, model load, worldgen, observe, adapter, graph, head
+decode, step, finish, replay write — is disjoint; the second decomposes the cartridge calls among
+them (instantiate, encode, the wasm call, decode) and double-counts on purpose.
+`TINYBRAINS_PROFILE_NODES=1` adds the graph node by node, at the cost of running it through tract's
+state machine rather than `plan.run`; `TINYBRAINS_TIMINGS_CSV=<path>` writes the per-turn curve,
+which is how you see what grows with the colony and what is set by the board. Recording is always
+on and costs tens of nanoseconds a span; only the printing is behind the flag.
+
+**Read `infer_us` as the graph alone.** The number in every replay's `seats` and in
+`check --json` is `plan.run` and not the adapter that fed it — on the starter kit the adapter is
+18 µs against 4.3 ms of graph, so the two are worth telling apart. `--timings` is where both are.
 
 **What is identical to production**, and this is the point: the component (same file, same digest),
 the evaluator (datalogic, the version `tinybrains games` prints), the runtime (tract), the head
@@ -205,6 +219,7 @@ src/matchfile.rs       the match-file format's only specification
 src/model.rs, onnx.rs  datalogic adapters, tract graphs, the head decode
 src/registry.rs        games.toml: a path or a pinned release
 src/store.rs           the content-addressed cache under ~/.cache/tinybrains
+src/timing.rs          where a run's wall clock went: --timings
 src/serve.rs           `view`'s local server for the cartridge's own viewer
 wit/                   the plugin ABI the component exports
 scripts/formula.sh     the Homebrew formula, rendered from a release's SHA256SUMS
@@ -229,6 +244,32 @@ Formula/               the tap: written by the release workflow, never by hand
   a new version, because the formula and every pinned download name the archive's sha256.
 
 ## Status
+
+**18 September 2026 — a run says where its wall clock went (`--timings`).** The binary had one
+timer, around `plan.run`, reported as `infer_us`; everything else a match spends was unmeasured.
+`src/timing.rs` is now a set of lock-free accumulators written from the four places a match spends
+time — the cartridge host, datalogic, tract and the loop between them — and printed on `--timings`
+against the wall clock the command measured, so an unaccounted remainder shows as its own row.
+`TINYBRAINS_PROFILE_NODES=1` adds the graph node by node and `TINYBRAINS_TIMINGS_CSV` the per-turn
+curve. Recording is unconditional and costs tens of nanoseconds a span; a normal run prints exactly
+what it printed before.
+
+What it says about ants-starter's self-play match (300 turns, 600 seat-turns, an M2 Pro): **the
+graph is 88% of it**, flat at 8.1 ms a turn from turn 0 to turn 300 — the model is fully
+convolutional over the whole board, so its cost is the board's and not the colony's. Inside the
+graph, **`Im2col` costs more than the matmul it feeds** (52% against 46%), which is what a
+nine-channel convolution looks like: the packing is memory-bound and the arithmetic is not the work.
+The f16 weight casts are constant-folded and cost nothing. Everything that does scale with the
+colony — observe 188→440 µs, the adapter 30→42 µs, the head decode 9→11 µs — is noise beside it. The
+adapter is 18 µs a seat-turn against 4.3 ms of graph, so a manifest's operation budget is not where
+a local run's time goes. One-offs: the cartridge compiles in 118 ms and a fresh wasm instance per
+call is 70 µs × 603.
+
+Open, in rough order of what it would buy: the seats of a turn are independent inferences played
+one after the other (a worker per seat needs a `Model` per thread — datalogic's `Engine` holds a
+`Box<dyn CustomOperator>` and is not `Send`); `opt-level = 3` with fat LTO measured 5% off the graph
+and some twelve minutes onto the build, which is why the profile is still `opt-level = 2`; and
+wasmtime's compiled component could be cached rather than recompiled per process.
 
 **17 September 2026 (later) — the dependency set is the minimum, with features gated.** Before the
 first release, every direct dependency was checked for what the binary actually calls:

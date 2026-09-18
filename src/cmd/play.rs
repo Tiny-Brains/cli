@@ -11,6 +11,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut out = PathBuf::from("replays");
     let mut slug: Option<String> = None;
     let mut verbose = false;
+    let mut timings = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -24,6 +25,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 slug = Some(args.get(i).ok_or("--game needs a slug")?.clone());
             }
             "-v" | "--verbose" => verbose = true,
+            "--timings" => timings = true,
             other if !other.starts_with('-') => file = Some(PathBuf::from(other)),
             other => return Err(format!("unknown option '{other}'\n\n{}", crate::USAGE)),
         }
@@ -31,9 +33,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     let file = file.ok_or("which match file?\n\n  tinybrains matches/quick.json")?;
 
+    let whole = crate::timing::start();
+    let t = crate::timing::start();
     let mf = MatchFile::load(&file)?;
     wave::check_uniform(&mf.rows)?;
     let game = open_game(Some(slug.as_deref().unwrap_or(&mf.game)))?;
+    crate::timing::stop(crate::timing::P::Registry, t);
 
     // The same seeds on a different engine are a different match, so a silent play would make any
     // comparison meaningless.
@@ -48,7 +53,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         );
     }
 
+    let t = crate::timing::start();
     let cart = Cartridge::open(&game.component).map_err(|e| e.to_string())?;
+    crate::timing::stop(crate::timing::P::CartOpen, t);
     let models = Models::new();
 
     println!(
@@ -67,8 +74,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     println!();
     for o in &report.outcomes {
         let path = out.join(format!("{}.json", o.id));
+        let t = crate::timing::start();
         let bytes = serde_json::to_vec(&o.envelope).map_err(|e| e.to_string())?;
+        let n = bytes.len();
         std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        crate::timing::stop(crate::timing::P::Write, t);
+        crate::timing::bytes(crate::timing::P::Write, n);
 
         let seats: Vec<String> = mf
             .rows
@@ -127,5 +138,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
         );
     }
     println!("this is not an admission check -- `tinybrains check` is the gate");
+    if timings {
+        crate::timing::report(whole.elapsed());
+        crate::timing::report_nodes();
+        if let Ok(csv) = std::env::var("TINYBRAINS_TIMINGS_CSV")
+            && let Err(e) = crate::timing::write_csv(&csv)
+        {
+            eprintln!("tinybrains: could not write {csv}: {e}");
+        }
+    }
     Ok(())
 }

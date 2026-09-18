@@ -215,7 +215,10 @@ pub fn run(
                 Ok(inf) => {
                     ops = inf.peak_ops;
                     infer_us = inf.infer_us;
-                    read_head(&inf, &v["view"]).unwrap_or(Value::Null)
+                    let t = crate::timing::start();
+                    let head = read_head(&inf, &v["view"]).unwrap_or(Value::Null);
+                    crate::timing::stop(crate::timing::P::Head, t);
+                    head
                 }
                 Err(e) => {
                     if verbose {
@@ -270,6 +273,7 @@ pub fn run(
             .map_err(fault)?;
         state = stepped["wave_state"].clone();
         report.turns_played += 1;
+        crate::timing::mark_turn();
         for d in stepped["replay_delta"].as_array().cloned().unwrap_or_default() {
             deltas.entry(d["m"].as_u64().unwrap_or(0) as usize).or_default().push(d);
         }

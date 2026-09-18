@@ -7,6 +7,7 @@ mod onnx;
 mod registry;
 mod serve;
 mod store;
+mod timing;
 mod wave;
 
 pub const USAGE: &str = "\
@@ -28,6 +29,7 @@ Options
   --out DIR      where replays go (default: ./replays)
   --game SLUG    which game (default: the file's `game`, else ants)
   -v, --verbose  print every strike and forfeit as it happens
+  --timings      where the wall clock went, phase by phase
 ";
 
 fn main() {

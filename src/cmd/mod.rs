@@ -57,7 +57,9 @@ impl Models {
             .ok_or_else(|| format!("no manifest stored under {manifest_hash}"))?;
         let manifest: serde_json::Value = serde_json::from_slice(&mbytes)
             .map_err(|e| format!("the manifest under {manifest_hash} is not JSON: {e}"))?;
+        let t = crate::timing::start();
         let model = std::rc::Rc::new(crate::model::Model::load(&manifest, &onnx)?);
+        crate::timing::stop(crate::timing::P::ModelLoad, t);
         self.loaded.borrow_mut().insert(key, model.clone());
         Ok(model)
     }
