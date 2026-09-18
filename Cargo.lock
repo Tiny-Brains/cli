@@ -1706,7 +1706,7 @@ dependencies = [
 
 [[package]]
 name = "tinybrains"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "datalogic-rs",
  "flate2",
