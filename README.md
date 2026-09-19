@@ -66,7 +66,7 @@ tinybrains view replays/self-play.json         # watch it
 **It does not**
 
 - Know any game. It knows five function names, `cartridge.json` and the replay envelope; every
-  board, preset, seat count and limit is read from the manifest.
+  board, seat count and limit is read from the manifest or from the board itself.
 - Decide anything the ladder decides. `check` is necessary and not sufficient: there is no download
   allowlist here, and the size class is reported, never assigned — that table is Soma's.
 - Carry a registry. A project carries its own `games.toml`; a
@@ -104,13 +104,14 @@ in the platform's images builds or runs it.
 ```text
 tinybrains <match.json> [--out DIR] [-v]   play a wave; write one replay per row  [--timings]
 tinybrains games                           what is registered, and at which digest
-tinybrains maps [GAME]                     the boards a game is played on
+tinybrains maps [GAME]                     the boards a release ships
 tinybrains maps export [GAME] [DIR]        write those boards out as files
+tinybrains maps check <board.json>...      would an upload of these be accepted?
 tinybrains view <replay.json>              watch it in a browser
 tinybrains check <model.onnx> <manifest>   would this be admitted?  [--json]
 tinybrains adapt <model.onnx> <manifest>   dump the tensors an adapter produces
 tinybrains conform <replay.json>           replay a recorded match here, and diff
-tinybrains env [...]                       the cartridge as a training environment
+tinybrains env [--maps IDS|DIR] [...]      the cartridge as a training environment
 tinybrains --version
 ```
 
@@ -137,8 +138,18 @@ engine = "sha256:<64 hex>"       # == games.active_engine_digest
 
 **The match file** is `K_WAVE`'s rows plus the Orion `[vars]` they run under, so a real claim can be
 dumped to a file and replayed here; a seat may also name `weights`/`manifest` as a path or a URL, or
-be scripted (`"script": ["E", "E", "-"]`). The book's *Testing* §Match files is the competitor-facing
-copy of `src/matchfile.rs`.
+be scripted (`"script": ["E", "E", "-"]`). **A row names its board with `map`** — an id the release
+ships (`tinybrains maps`), a path ending `.json` relative to the match file, or the board itself —
+and is refused if it still names a `preset` (N28): the engine carries no boards and the seed no
+longer chooses one. The book's *Testing* §Match files is the competitor-facing copy of
+`src/matchfile.rs`.
+
+**The boards** a release ships are its basic ones; a season's are uploaded to the platform and are
+in no release (N28), so a match file names one by its path. `tinybrains maps check` asks of a board
+file what Soma's upload asks — inside the cartridge's `limits.boards`, and opened by the engine's own
+`worldgen` — so a folder of season boards is known good before it is uploaded. `tinybrains env`
+draws its boards from `--maps` (ids, paths, or a directory; the release's basic boards by default),
+one board a wave so a wave stacks into one tensor size, in turn from where `--seed` starts them.
 
 `TINYBRAINS_HOME` moves the cache (models and cartridges) off `~/.cache/tinybrains`.
 
@@ -244,6 +255,19 @@ Formula/               the tap: written by the release workflow, never by hand
   a new version, because the formula and every pinned download name the archive's sha256.
 
 ## Status
+
+**19 September 2026 — boards, not presets (N28).** The engine carries no boards any more, so
+this binary hands `worldgen` every board whole: a match file's row names its board with `map` (an id
+the release ships, a path, or inline) and a row still naming a `preset` is refused with the way out;
+`wave.rs` sends `maps` and never `preset`; `tinybrains env` takes `--maps` (ids, paths, or a
+directory) in place of `--preset`, says `maps` in its hello and `map` on an ended episode, and draws
+a board a wave in turn from the seed; `tinybrains maps check` is new and judges a board file the way
+Soma's upload will. Checked against a local ants build: all 32 of season 1's boards pass
+`maps check`, a broken one is refused in the engine's words, a match on a basic board and one on a
+season board by path play, and the starter kit's two match files play and `conform` IDENTICAL. The
+same binary still plays, conforms and trains against the old `engine-df312c0458d9` release, whose
+boards carry presets — it passes them whole, which an engine of any age accepts. **Not released**:
+the release waits for the ants release it pairs with.
 
 **18 September 2026 — a run says where its wall clock went (`--timings`).** The binary had one
 timer, around `plan.run`, reported as `infer_us`; everything else a match spends was unmeasured.

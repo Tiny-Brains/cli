@@ -35,9 +35,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let whole = crate::timing::start();
     let t = crate::timing::start();
-    let mf = MatchFile::load(&file)?;
+    let mut mf = MatchFile::load(&file)?;
     wave::check_uniform(&mf.rows)?;
     let game = open_game(Some(slug.as_deref().unwrap_or(&mf.game)))?;
+    mf.resolve_boards(&game)?;
     crate::timing::stop(crate::timing::P::Registry, t);
 
     // The same seeds on a different engine are a different match, so a silent play would make any
@@ -58,13 +59,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
     crate::timing::stop(crate::timing::P::CartOpen, t);
     let models = Models::new();
 
+    let mut boards: Vec<&str> =
+        mf.rows.iter().map(|r| r.map.get("id").and_then(|v| v.as_str()).unwrap_or("?")).collect();
+    boards.dedup();
     println!(
-        "{} on {} -- {} match{}, preset {}, engine {}",
+        "{} on {} -- {} match{}, board{} {}, engine {}",
         game.slug,
         game.name,
         mf.rows.len(),
         if mf.rows.len() == 1 { "" } else { "es" },
-        mf.rows[0].preset,
+        if boards.len() == 1 { "" } else { "s" },
+        boards.join(","),
         short(&game.engine_digest)
     );
 

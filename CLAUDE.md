@@ -85,6 +85,12 @@ claims (`K_WAVE` in `kalam/scripts/gen-kalam.py`) plus the vars it runs under. T
 §Match files (`web/docs/src/models/testing.md`) is its competitor-facing copy, and no check compares
 them: a field added or derived differently here is an edit there too.
 
+**Every board goes to `worldgen` whole** (N28, soma). The component carries none, so a row's `map` —
+an id resolved in the release's `maps/`, a `.json` path relative to the match file, or the board
+itself — is turned into the board by `MatchFile::resolve_boards` before a turn is played, and `env`
+does the same for its `--maps` pool. There are no presets: a row naming one is refused, never
+ignored. A season's boards are in no release, which is why a path is a way to name one.
+
 **`src/timing.rs` is the run's own clock, and its two groups are not one list.** `Registry`..`Write`
 are disjoint and sum to the run; `Instantiate`..`DecodeOut` decompose the cartridge calls among them
 and double-count on purpose. Adding a phase to the first group without taking it out of another is

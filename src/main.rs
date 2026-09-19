@@ -16,13 +16,14 @@ tinybrains -- run a TinyBrains match locally
   tinybrains <match.json> [--out DIR] [-v]   play a wave; write one replay per row
   tinybrains run <match.json> [...]          the same, spelled out
   tinybrains games                           what is registered, and at which digest
-  tinybrains maps [GAME]                     the boards a game is played on
+  tinybrains maps [GAME]                     the boards a release ships
   tinybrains maps export [GAME] [DIR]        write those boards out as files
+  tinybrains maps check <board.json>...      would an upload of these be accepted?
   tinybrains view <replay.json>              watch it in a browser
   tinybrains check <model.onnx> <manifest>   would this be admitted?  [--json]
   tinybrains adapt <model.onnx> <manifest>   dump the tensors an adapter produces
   tinybrains conform <replay.json>           replay a recorded match here, and diff
-  tinybrains env [...]                       the cartridge as a training environment
+  tinybrains env [--maps IDS|DIR] [...]      the cartridge as a training environment
   tinybrains --version                       which release this is
 
 Options

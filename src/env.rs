@@ -24,20 +24,46 @@
 //!    while the policy sees only the fog-filtered view is asymmetric actor-critic, not a hole in
 //!    the fog: nothing on this path reaches a model's input.
 //!
-//! **Nothing here knows what game it is running.** Five function names, `cartridge.json` for the
-//! presets and the seat counts, and JSON in both directions.
+//! **Nothing here knows what game it is running.** Four function names, the boards the pool is
+//! given, and JSON in both directions.
+//!
+//! **The pool is boards, not presets** (N28). The component carries no boards, so every wave is
+//! handed one, whole: by default the release's basic boards, or whatever `--maps` names -- a
+//! season's boards from a folder among them, which is how a trainer practises on what the ladder
+//! plays. The seed chose a board from a preset's pool inside the engine; it chooses one from this
+//! pool here, the one place that still wants the rule.
 
 use serde_json::{Value, json};
 
 use crate::cartridge::{Cartridge, Fault};
 use crate::registry::Game;
 
-/// A preset as the manifest declares it. Seats are a property of the board, so `players` is passed
-/// to `worldgen` to be *checked* rather than to be obeyed.
+/// One board of the pool, whole, and the few numbers of its header a trainer is told in `hello`.
+/// Seats are a property of the board, so `players` is passed to `worldgen` to be *checked* rather
+/// than to be obeyed.
 #[derive(Clone)]
-pub struct Preset {
-    pub name: String,
+pub struct Board {
+    pub id: String,
     pub players: u64,
+    pub rows: u64,
+    pub cols: u64,
+    pub board: Value,
+}
+
+impl Board {
+    pub fn of(board: Value) -> Result<Board, String> {
+        let num = |k: &str| board.get(k).and_then(Value::as_u64);
+        let id = board.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        let (Some(players), Some(rows), Some(cols)) = (num("players"), num("rows"), num("cols"))
+        else {
+            return Err(format!("board '{id}' has no players, rows or cols"));
+        };
+        Ok(Board { id, players, rows, cols, board })
+    }
+
+    pub fn hello(&self) -> Value {
+        json!({ "id": self.id, "players": self.players, "rows": self.rows, "cols": self.cols })
+    }
 }
 
 pub struct Config {
@@ -49,11 +75,10 @@ pub struct Config {
     /// The root seed. Every board and every food respawn descends from it, so a run is reproducible
     /// from this number and the action stream and nothing else.
     pub seed: u64,
-    /// Cycled across wave slots. One `worldgen` call is one preset, so a mixed pool mixes by wave.
-    pub presets: Vec<Preset>,
-    /// Training only. The ladder cannot name a board — pairing assigns the seed and the seed picks
-    /// the board — so this is a facility a competitor has locally and never in a rated match.
-    pub map: Option<String>,
+    /// Drawn from by wave. Every match of a wave is played on one board, so a wave's views stack
+    /// into one tensor size and a mixed pool mixes by wave -- as a preset pool used to. On the
+    /// ladder pair chooses the board, never the competitor; choosing here is a local facility.
+    pub boards: Vec<Board>,
     pub scores_every_turn: bool,
 }
 
@@ -61,7 +86,8 @@ pub struct Config {
 /// slot for the life of the process and `ep` identifies a match.
 struct Wave {
     state: Value,
-    preset: String,
+    /// The board every match of this wave is played on.
+    board: String,
     seeds: Vec<u64>,
     /// Monotonic per match, across refills: the only stable key for a trajectory. `(w, m)` is not
     /// one, because a refill reuses both.
@@ -78,6 +104,8 @@ pub struct Pool<'a> {
     waves: Vec<Wave>,
     next_seed: u64,
     next_ep: u64,
+    /// Waves opened so far, refills included: which board the next one is played on.
+    opened: u64,
     /// Live seats per wave slot as of the last `observe`, which is how a flat action list is cut
     /// back into per-wave calls. Held rather than recomputed: `step` must split exactly the way
     /// `observe` joined, and deriving it twice is how the two would come to disagree.
@@ -89,8 +117,8 @@ pub struct Pool<'a> {
 
 impl<'a> Pool<'a> {
     pub fn open(game: &'a Game, cart: &'a Cartridge, cfg: Config) -> Result<Pool<'a>, String> {
-        if cfg.presets.is_empty() {
-            return Err(format!("{} declares no presets", game.slug));
+        if cfg.boards.is_empty() {
+            return Err(format!("no boards to play {} on: name some with --maps", game.slug));
         }
         let mut pool = Pool {
             game,
@@ -98,6 +126,7 @@ impl<'a> Pool<'a> {
             waves: Vec::new(),
             next_seed: cfg.seed,
             next_ep: 0,
+            opened: 0,
             last_counts: vec![0; cfg.waves],
             steps: 0,
             seat_turns: 0,
@@ -112,9 +141,14 @@ impl<'a> Pool<'a> {
     }
 
     /// A fresh wave in slot `w`. Seeds advance monotonically so no two matches in a run share one,
-    /// and the preset follows the slot so a mixed pool stays mixed after a refill.
-    fn worldgen(&mut self, w: usize) -> Result<Wave, String> {
-        let preset = self.cfg.presets[w % self.cfg.presets.len()].clone();
+    /// and the boards are drawn in turn from where the root seed starts them, so every board is
+    /// played, a refill moves on to the next, and a run is the same run from the same seed. `w`
+    /// names the slot only: a board that followed the slot would leave any board past the number
+    /// of waves unplayed for ever.
+    fn worldgen(&mut self, _w: usize) -> Result<Wave, String> {
+        let n = self.cfg.boards.len() as u64;
+        let board = self.cfg.boards[((self.cfg.seed + self.opened) % n) as usize].clone();
+        self.opened += 1;
         let seeds: Vec<u64> = (0..self.cfg.matches_per_wave)
             .map(|_| {
                 let s = self.next_seed;
@@ -130,20 +164,17 @@ impl<'a> Pool<'a> {
             })
             .collect();
 
-        let mut req = json!({
+        let req = json!({
             "seeds": seeds,
-            "preset": preset.name,
-            "players": preset.players,
+            "map": board.board,
+            "players": board.players,
             "max_turns": self.cfg.max_turns,
         });
-        if let Some(id) = &self.cfg.map {
-            req["map"] = json!(id);
-        }
         let out = self.invoke("worldgen", &req)?;
 
         Ok(Wave {
             state: out["wave_state"].clone(),
-            preset: preset.name,
+            board: board.id,
             seeds,
             eps,
             map_ids: strings(&out["map_ids"]),
@@ -313,7 +344,7 @@ impl<'a> Pool<'a> {
                     "scores": r["scores"],
                     "ranks": r["ranks"],
                     "reason": r["reason"],
-                    "preset": wave.preset,
+                    "map": wave.board,
                     "seed": wave.seeds.get(m).copied().unwrap_or(0),
                     "map_id": wave.map_ids.get(m).cloned().unwrap_or_default(),
                 })
@@ -403,29 +434,27 @@ fn strings(v: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The presets a game declares, as the pool cycles them. `players` comes from the manifest and is
-/// passed through to be checked against the board, never to choose a seat count.
-pub fn presets_of(game: &Game, only: Option<&str>) -> Result<Vec<Preset>, String> {
-    let all: Vec<Preset> = game
-        .manifest
-        .get("presets")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|p| {
-                    Some(Preset {
-                        name: p.get("name")?.as_str()?.to_string(),
-                        players: p.get("players").and_then(Value::as_u64).unwrap_or(2),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let Some(name) = only else { return Ok(all) };
-    let found: Vec<Preset> = all.into_iter().filter(|p| p.name == name).collect();
-    if found.is_empty() {
-        return Err(format!("{} has no preset '{name}'", game.slug));
+/// The pool `--maps` names: comma-separated ids the release ships or paths ending `.json`, or a
+/// directory of boards -- a season's folder, say. Nothing means every board the release ships.
+pub fn boards_of(game: &Game, spec: Option<&str>) -> Result<Vec<Board>, String> {
+    let here = std::path::Path::new(".");
+    let boards = match spec {
+        None => game.boards()?,
+        Some(dir) if std::path::Path::new(dir).is_dir() => {
+            crate::registry::boards_in(std::path::Path::new(dir))?
+        }
+        Some(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| game.resolve_board(&json!(s), here))
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    if boards.is_empty() {
+        return Err(match spec {
+            None => format!("{} ships no boards as files; name some with --maps", game.slug),
+            Some(s) => format!("--maps {s} names no boards"),
+        });
     }
-    Ok(found)
+    boards.into_iter().map(Board::of).collect()
 }

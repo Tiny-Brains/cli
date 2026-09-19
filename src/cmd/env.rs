@@ -8,13 +8,15 @@
 //! was trained on is a model card that cannot be reproduced.
 //!
 //! ```jsonc
-//! ← {"ok":true,"hello":{"game":"ants","engine_digest":"sha256:…","presets":[…],"waves":4,…}}
+//! ← {"ok":true,"hello":{"game":"ants","engine_digest":"sha256:…","maps":[{"id":…,"players":2,
+//!    "rows":24,"cols":24},…],"waves":4,…}}
 //! → {"op":"observe"}
 //! ← {"ok":true,"turn":0,"seats":[{"w":0,"m":0,"ep":0,"seat":0,"turn":0,"obs":{…}},…],
 //!    "scores":[{"w":0,"m":0,"ep":0,"turns":0,"scores":[0,0]},…],"ended":[]}
 //! → {"op":"step","actions":["NNE-","-W",…]}      // positional, one entry per seat above
 //! ← {"ok":true,"turn":1,"seats":[…],"scores":[…],
-//!    "ended":[{"ep":3,"ranks":[1,2],"scores":[4,-1],"reason":"lone_survivor","turns":312,…}]}
+//!    "ended":[{"ep":3,"ranks":[1,2],"scores":[4,-1],"reason":"lone_survivor","turns":312,
+//!              "map":"basic-tiny-2p",…}]}
 //! → {"op":"close"}
 //! ```
 //!
@@ -28,13 +30,12 @@ use serde_json::{Value, json};
 
 use crate::cartridge::Cartridge;
 use crate::cmd::open_game;
-use crate::env::{Config, Pool, presets_of};
+use crate::env::{Config, Pool, boards_of};
 use crate::store::short;
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut slug: Option<String> = None;
-    let mut preset: Option<String> = None;
-    let mut map: Option<String> = None;
+    let mut maps: Option<String> = None;
     let mut waves = 4usize;
     let mut matches_per_wave = 16usize;
     let mut max_turns: Option<u64> = None;
@@ -47,8 +48,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
     while i < args.len() {
         match args[i].as_str() {
             "--game" => slug = Some(value(args, i)?),
-            "--preset" => preset = Some(value(args, i)?),
-            "--map" => map = Some(value(args, i)?),
+            // One board is a pool of one; `--map` stays as the spelling a single one reads best in.
+            "--maps" | "--map" => maps = Some(value(args, i)?),
+            "--preset" => {
+                return Err("--preset is gone -- the engine carries no boards to pool (N28). \
+                            Name the boards with --maps: ids from `tinybrains maps`, paths, or a \
+                            directory of boards"
+                    .to_string());
+            }
             "--waves" => waves = num(&value(args, i)?)? as usize,
             "--matches-per-wave" => matches_per_wave = num(&value(args, i)?)? as usize,
             "--max-turns" => max_turns = Some(num(&value(args, i)?)?),
@@ -68,7 +75,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let game = open_game(slug.as_deref())?;
     let cart = Cartridge::open(&game.component).map_err(|e| e.to_string())?;
-    let presets = presets_of(&game, preset.as_deref())?;
+    let boards = boards_of(&game, maps.as_deref())?;
     let max_turns = max_turns.unwrap_or_else(|| game.limit("max_turns", 1000));
 
     let cfg = Config {
@@ -76,21 +83,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
         matches_per_wave,
         max_turns,
         seed,
-        presets: presets.clone(),
-        map: map.clone(),
+        boards: boards.clone(),
         scores_every_turn,
     };
     let mut pool = Pool::open(&game, &cart, cfg)?;
 
     eprintln!(
-        "{} on {} -- {} wave{} x {} matches, preset{} {}, engine {}",
+        "{} on {} -- {} wave{} x {} matches, board{} {}, engine {}",
         game.slug,
         game.name,
         waves,
         if waves == 1 { "" } else { "s" },
         matches_per_wave,
-        if presets.len() == 1 { "" } else { "s" },
-        presets.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(","),
+        if boards.len() == 1 { "" } else { "s" },
+        named(&boards),
         short(&game.engine_digest)
     );
     eprintln!("this is not the referee: no deadline, no strikes, no forfeits");
@@ -105,16 +111,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 "game": game.slug,
                 "engine_digest": game.engine_digest,
                 "evaluator": format!("datalogic {}", crate::model::DATALOGIC_VERSION),
-                "presets": presets.iter()
-                    .map(|p| json!({ "name": p.name, "players": p.players }))
-                    .collect::<Vec<_>>(),
+                "maps": boards.iter().map(|b| b.hello()).collect::<Vec<_>>(),
                 "limits": game.manifest.get("limits").cloned().unwrap_or(Value::Null),
                 "budgets": game.manifest.get("budgets").cloned().unwrap_or(Value::Null),
                 "waves": waves,
                 "matches_per_wave": matches_per_wave,
                 "max_turns": max_turns,
                 "seed": seed,
-                "map": map,
                 "scores": if scores_every_turn { "every" } else { "end" },
             }
         }),
@@ -171,6 +174,15 @@ fn turn(pool: &mut Pool, line: &str) -> Result<Option<Value>, String> {
         "scores": scores,
         "ended": ended,
     })))
+}
+
+/// The pool in a line: every board of a short one, the first few of a folder's worth.
+fn named(boards: &[crate::env::Board]) -> String {
+    let ids: Vec<&str> = boards.iter().map(|b| b.id.as_str()).collect();
+    match ids.len() {
+        0..=6 => ids.join(","),
+        n => format!("{},… ({n} in all)", ids[..5].join(",")),
+    }
 }
 
 fn say(out: &mut impl Write, v: &Value) -> Result<(), String> {

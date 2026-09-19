@@ -19,26 +19,13 @@ pub fn run() -> Result<(), String> {
 }
 
 fn describe(slug: &str, g: &Game) {
-    let presets: Vec<String> = g
-        .manifest
-        .get("presets")
-        .and_then(|p| p.as_array())
-        .map(|a| {
-            a.iter()
-                .map(|p| {
-                    format!(
-                        "{} ({} seats, {} boards)",
-                        p["name"].as_str().unwrap_or("?"),
-                        p["players"].as_u64().unwrap_or(0),
-                        p["maps"].as_u64().unwrap_or(0)
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     println!("{}  {}", slug, g.name);
     println!("    engine  {}", g.engine_digest);
     println!("    from    {}", g.source);
-    println!("    presets {}", presets.join(", "));
-    println!("    boards  {}", g.catalogue().len());
+    println!("    boards  {} shipped (`tinybrains maps`)", g.catalogue().len());
+    // A season's boards are uploaded, not shipped (N28), and must fit what the release's own boards
+    // span; a release from before then declares nothing, and says so by saying nothing.
+    if let Some(e) = crate::cmd::maps::envelope_line(g) {
+        println!("    season  a board may be {e}");
+    }
 }

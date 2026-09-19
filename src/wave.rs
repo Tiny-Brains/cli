@@ -106,17 +106,15 @@ pub fn run(
     }
 
     // One worldgen with every seed: that is what makes this a wave and not a loop over matches, so
-    // one batched play call per turn serves every match a model is in.
-    let mut world = json!({
+    // one batched play call per turn serves every match a model is in. Each row's board goes whole,
+    // as the claim hands it to a runner: the component carries none to look one up in (N28), and
+    // `MatchFile::resolve_boards` has already turned every name into a board.
+    let world = json!({
         "seeds": mf.rows.iter().map(|r| r.seed).collect::<Vec<_>>(),
-        "preset": mf.rows[0].preset,
+        "maps": mf.rows.iter().map(|r| r.map.clone()).collect::<Vec<_>>(),
         "players": mf.rows[0].seat_count,
         "max_turns": max_turns,
     });
-    let maps: Vec<Value> = mf.rows.iter().map(|r| r.map.clone()).collect();
-    if maps.iter().any(|m| !m.is_null()) {
-        world["maps"] = Value::Array(maps);
-    }
     let opened = cart.invoke(&f(game, "worldgen"), &world).map_err(fault)?;
     let mut state = opened["wave_state"].clone();
     let map_ids: Vec<String> = opened["map_ids"]
@@ -311,7 +309,6 @@ pub fn run(
         let envelope = json!({
             "match_id": row.id,
             "seed": row.seed,
-            "preset": row.preset,
             "map_id": r["map_id"],
             "map": r["map"],
             "max_turns": max_turns,
@@ -405,18 +402,11 @@ fn fault(e: Fault) -> String {
     format!("the cartridge refused: {e}")
 }
 
-/// Rows in one file must share a preset and a seat count, as a claimed wave does: `worldgen` takes
-/// one preset for the whole call.
+/// Rows in one file must share a seat count: `worldgen` checks every board of the wave against the
+/// one `players` it is given. The boards themselves may differ -- each row carries its own.
 pub fn check_uniform(rows: &[Row]) -> Result<(), String> {
     let first = &rows[0];
     for r in rows.iter().skip(1) {
-        if r.preset != first.preset {
-            return Err(format!(
-                "a wave is one preset: row '{}' is '{}' and row '{}' is '{}'.\n\
-                 Split them into two files, or run them one after the other.",
-                first.id, first.preset, r.id, r.preset
-            ));
-        }
         if r.seat_count != first.seat_count {
             return Err(format!(
                 "a wave is one seat count: '{}' has {} and '{}' has {}",

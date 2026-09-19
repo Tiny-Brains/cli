@@ -8,11 +8,18 @@
 //! The one local addition: a seat may name `weights`/`manifest` -- a path or a URL -- instead of
 //! `weights_hash`/`manifest_hash`. A file that uses only hashes is byte-compatible with the
 //! database. Self-play, an older version, a downloaded release and a baseline all fall out of that.
+//!
+//! **A row names its board, and there are no presets** (N28, `soma/docs/decisions.md`). The claim hands
+//! a runner the board itself; a file may too, or name one: an id the release ships (`tinybrains
+//! maps`), or a path ending `.json`, relative to this file -- which is how a season's board, uploaded
+//! to the platform and in no release, is played on a laptop. `resolve_boards` turns every name into
+//! the board, and checks it seats as many as the row names.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::registry::Game;
 use crate::store;
 
 pub struct MatchFile {
@@ -20,14 +27,16 @@ pub struct MatchFile {
     pub engine_digest: Option<String>,
     pub vars: Value,
     pub rows: Vec<Row>,
+    /// The file's own directory: what a board's path, like a seat's, is relative to.
+    base: PathBuf,
 }
 
 pub struct Row {
     pub id: String,
     pub seed: u64,
-    pub preset: String,
     pub seat_count: u64,
-    /// A catalogue id, an inline board, or null for "let the seed choose".
+    /// The board: as the file wrote it -- an id, a path, or the board inline -- until
+    /// `MatchFile::resolve_boards`, and the board itself after.
     pub map: Value,
     pub seats: Vec<Seat>,
 }
@@ -73,7 +82,31 @@ impl MatchFile {
             engine_digest: doc.get("engine_digest").and_then(Value::as_str).map(str::to_string),
             vars: doc.get("vars").cloned().unwrap_or(Value::Null),
             rows,
+            base,
         })
+    }
+
+    /// Every row's board, whole, from whatever the file named it by -- and each one checked to
+    /// seat the row's seats. A board's seat count is the board's (decision 14), so a row that
+    /// disagrees is refused here rather than by `worldgen`, where it would name no row.
+    pub fn resolve_boards(&mut self, game: &Game) -> Result<(), String> {
+        for row in &mut self.rows {
+            let board = game
+                .resolve_board(&row.map, &self.base)
+                .map_err(|e| format!("row '{}': {e}", row.id))?;
+            let players = board.get("players").and_then(Value::as_u64);
+            if players != Some(row.seat_count) {
+                return Err(format!(
+                    "row '{}': board '{}' seats {}, and the row names {} seats",
+                    row.id,
+                    board.get("id").and_then(Value::as_str).unwrap_or("?"),
+                    players.map_or("an unknown number".to_string(), |p| p.to_string()),
+                    row.seat_count
+                ));
+            }
+            row.map = board;
+        }
+        Ok(())
     }
 
     /// A tuning number from the file, falling back to the game's own manifest.
@@ -95,11 +128,22 @@ impl Row {
             .get("seed")
             .and_then(Value::as_u64)
             .ok_or_else(|| format!("row '{id}': no `seed`"))?;
-        let preset = r
-            .get("preset")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("row '{id}': no `preset`"))?
-            .to_string();
+        // Refused by name rather than ignored: a file written before N28 names a preset and
+        // relied on the seed to choose a board from its pool, and there is no pool any more.
+        if r.get("preset").is_some() {
+            return Err(format!(
+                "row '{id}': `preset` is gone -- the engine carries no boards to pool (N28).\n\
+                 Name the board with `map`: an id from `tinybrains maps`, a path to a board's \
+                 .json, or the board itself."
+            ));
+        }
+        let map = r.get("map").cloned().unwrap_or(Value::Null);
+        if map.is_null() {
+            return Err(format!(
+                "row '{id}': no `map` -- an id from `tinybrains maps`, a path to a board's .json, \
+                 or the board itself"
+            ));
+        }
 
         let seats_json = r
             .get("seats")
@@ -118,14 +162,7 @@ impl Row {
             ));
         }
 
-        Ok(Row {
-            id,
-            seed,
-            preset,
-            seat_count,
-            map: r.get("map").cloned().unwrap_or(Value::Null),
-            seats,
-        })
+        Ok(Row { id, seed, seat_count, map, seats })
     }
 }
 

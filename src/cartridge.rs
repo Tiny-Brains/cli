@@ -12,7 +12,7 @@
 //!
 //! **Nothing in this file knows what game it is running.** It knows five function names live
 //! behind one entry point and that both sides of the call are JSON. Everything game-shaped —
-//! presets, seats, boards, limits — is read from `cartridge.json`, the same document the platform
+//! seats, boards, limits — is read from `cartridge.json`, the same document the platform
 //! registers. That is the property the whole CLI rests on, and it is cheap to keep: this module
 //! never names Ants and never links its crate.
 

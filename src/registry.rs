@@ -58,9 +58,12 @@ pub struct Game {
     pub name: String,
     pub component: PathBuf,
     pub engine_digest: String,
-    /// `cartridge.json`: presets, seats, limits, budgets, and the board catalogue.
+    /// `cartridge.json`: limits, budgets, the envelope a season's board must fit (`limits.boards`),
+    /// and the catalogue of the boards the release ships.
     pub manifest: Value,
-    /// Where the boards live as files, when the game ships them.
+    /// Where the boards the release ships live as files -- for Ants, the five basic boards. A
+    /// season's boards are never here: they are uploaded to the platform and are in no release
+    /// (N28), so a match file names one by path instead.
     pub maps_dir: Option<PathBuf>,
     pub source: String,
 }
@@ -243,13 +246,63 @@ fn unpack(gz: &[u8], into: &Path) -> Result<(), String> {
 }
 
 impl Game {
-    /// The boards this game publishes, from `cartridge.json`'s catalogue.
+    /// The boards this game's release ships, from `cartridge.json`'s catalogue.
     pub fn catalogue(&self) -> Vec<&Value> {
         self.manifest
             .get("maps")
             .and_then(|v| v.as_array())
             .map(|a| a.iter().collect())
             .unwrap_or_default()
+    }
+
+    /// One board the release ships, whole, by id: what `worldgen` must be handed now that the
+    /// component carries no boards of its own (N28).
+    pub fn board(&self, id: &str) -> Result<Value, String> {
+        // An id is a file name under `maps/` and nothing else, so it cannot be a way out of it.
+        if id.is_empty() || id.contains(['/', '\\', ':']) || id.starts_with('.') {
+            return Err(format!("'{id}' is not a board id"));
+        }
+        let dir = self.maps_dir.as_ref().ok_or_else(|| {
+            format!(
+                "{} ships no boards as files from where it resolved, so '{id}' names nothing",
+                self.slug
+            )
+        })?;
+        let path = dir.join(format!("{id}.json"));
+        if !path.is_file() {
+            return Err(format!(
+                "{} ships no board '{id}' -- `tinybrains maps` lists the ones it does; a season's \
+                 board is named by its path, `\"map\": \"../maps/{id}.json\"`",
+                self.slug
+            ));
+        }
+        read_board(&path)
+    }
+
+    /// Every board the release ships, whole, in id order.
+    pub fn boards(&self) -> Result<Vec<Value>, String> {
+        let Some(dir) = &self.maps_dir else { return Ok(Vec::new()) };
+        boards_in(dir)
+    }
+
+    /// What a match file or a trainer names a board by, turned into the board: an object is taken
+    /// as it is, a string ending `.json` is a file relative to `base`, and any other string is a
+    /// board the release ships. Nothing -- the old "let the seed choose" -- is refused, because
+    /// there is no pool left to choose from.
+    pub fn resolve_board(&self, spec: &Value, base: &Path) -> Result<Value, String> {
+        match spec {
+            Value::Object(_) => Ok(spec.clone()),
+            Value::String(s) if s.ends_with(".json") => read_board(&base.join(s)),
+            Value::String(id) => self.board(id),
+            Value::Null => Err("no board: name one with `map`".to_string()),
+            other => Err(format!("{other} is not a board: an id, a path to a .json, or the board")),
+        }
+    }
+
+    /// The envelope a season's board must fit (`limits.boards`), when the cartridge declares one.
+    /// A release from before N28 declares none.
+    pub fn envelope(&self) -> Option<&Value> {
+        self.manifest.get("limits").and_then(|l| l.get("boards")).filter(|b| b.is_object())
     }
 
     pub fn limit(&self, key: &str, dflt: u64) -> u64 {
@@ -264,4 +317,25 @@ impl Game {
     fn number(&self, table: &str, key: &str, dflt: u64) -> u64 {
         self.manifest.get(table).and_then(|t| t.get(key)).and_then(|v| v.as_u64()).unwrap_or(dflt)
     }
+}
+
+/// A board file, read and parsed. Its validity is the engine's to judge, at `worldgen`.
+pub fn read_board(path: &Path) -> Result<Value, String> {
+    let v = read_json(path)?;
+    if !v.is_object() {
+        return Err(format!("{} is not a board: a board is a JSON object", path.display()));
+    }
+    Ok(v)
+}
+
+/// Every `.json` in a directory, as boards, in file-name order.
+pub fn boards_in(dir: &Path) -> Result<Vec<Value>, String> {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+        .collect();
+    paths.sort();
+    paths.iter().map(|p| read_board(p)).collect()
 }

@@ -31,11 +31,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", tmp.display()))?;
     let mf = MatchFile::load(&tmp);
     let _ = std::fs::remove_file(&tmp);
-    let mf = mf?;
+    let mut mf = mf?;
 
     let game = open_game(Some(
         slug.as_deref().or_else(|| recorded.get("game").and_then(Value::as_str)).unwrap_or("ants"),
     ))?;
+    mf.resolve_boards(&game)?;
 
     // A different engine is not a failed run, it is a meaningless one.
     if let Some(want) = recorded.get("engine_digest").and_then(Value::as_str)
@@ -50,10 +51,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
 
     println!(
-        "replaying {} -- seed {}, preset {}, board {}",
+        "replaying {} -- seed {}, board {}",
         path,
         recorded["seed"],
-        recorded["preset"].as_str().unwrap_or("?"),
         recorded["map_id"].as_str().unwrap_or("?"),
     );
 
@@ -112,10 +112,9 @@ fn match_file_for(env: &Value) -> Result<Value, String> {
         "rows": [{
             "id": env.get("match_id").and_then(Value::as_str).unwrap_or("conform"),
             "seed": env["seed"],
-            "preset": env["preset"],
             "seat_count": out_seats.len(),
-            // Verbatim rather than by id: an envelope must reproduce even when the catalogue has
-            // moved on, which is why it carries a board at all.
+            // Verbatim, and the only way it could be: a season's board is in no release, so the
+            // envelope's copy is the one copy a laptop has. It is why an envelope carries a board.
             "map": env["map"],
             "seats": out_seats,
         }],
@@ -136,17 +135,8 @@ fn compare(platform: &Value, local: &Value) -> Vec<Diff> {
     // is NOT comparable and must not be added back: `orion_version` says which Orion ran the
     // adapters, and a local run is not a node (`wave.rs` writes `tinybrains-cli/datalogic-<ver>`
     // on purpose rather than claiming a version it is not). What conform asserts is the MATCH.
-    for f in [
-        "seed",
-        "preset",
-        "map",
-        "map_id",
-        "engine_digest",
-        "reason",
-        "turns",
-        "engine_ranks",
-        "scores",
-    ] {
+    for f in ["seed", "map", "map_id", "engine_digest", "reason", "turns", "engine_ranks", "scores"]
+    {
         note(f, &platform[f], &local[f]);
     }
 
