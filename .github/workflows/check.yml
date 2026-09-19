@@ -1,7 +1,7 @@
 # THE PASS THIS REPOSITORY DEFINES, ON EVERY PUSH.
 #
-# There are no unit tests and no test runner (CLAUDE.md says why: `tinybrains conform` is the check
-# that matters, and it needs a replay the ladder wrote). What a push can prove is that the crate is
+# There are no unit tests and no test runner: `tinybrains conform` is the check that matters, and
+# it needs a replay the ladder wrote. What a push can prove is that the crate is
 # formatted, lints clean, builds from the lockfile -- and that the binary still does what the one
 # repository every competitor clones asks of it: `ants-starter`'s own CI, run with THIS build. That
 # clone is a test input and not a build input; nothing here compiles against it.

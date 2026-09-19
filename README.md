@@ -1,13 +1,13 @@
 # cli
 
-`tinybrains` is one binary that plays a TinyBrains match on a laptop, with no Compose, no database
-and no season. It loads a game's cartridge component through wasmtime, evaluates a manifest's
-adapters through **datalogic** and its graph through **tract** — the two libraries an Orion node
-itself links — and writes the same replay envelope Kalam writes.
+`tinybrains` plays a TinyBrains match on your own machine, with no server, no database and no
+season. It hosts a game's cartridge through wasmtime and runs a model's adapters through
+**datalogic** and its graph through **tract**, which are the libraries an Orion node links. So
+`check` and a local match report what the ladder will, and every replay uses the ladder's format.
 
 ## Install
 
-macOS and Linux, with Homebrew:
+On macOS (Apple silicon) and Linux, with Homebrew:
 
 ```sh
 brew tap tiny-brains/cli https://github.com/Tiny-Brains/cli
@@ -19,8 +19,11 @@ Or take the archive for your platform from the
 release's `SHA256SUMS`, and put the binary on your `PATH`:
 
 ```sh
-curl -fsSLO https://github.com/Tiny-Brains/cli/releases/latest/download/tinybrains-x86_64-unknown-linux-gnu.tar.gz
-tar -xzf tinybrains-x86_64-unknown-linux-gnu.tar.gz tinybrains && sudo mv tinybrains /usr/local/bin/
+base=https://github.com/Tiny-Brains/cli/releases/latest/download
+archive=tinybrains-x86_64-unknown-linux-gnu.tar.gz
+curl -fsSLO "$base/$archive"
+curl -fsSL "$base/SHA256SUMS" | grep " $archive\$" | sha256sum -c -
+tar -xzf "$archive" tinybrains && sudo mv tinybrains /usr/local/bin/
 ```
 
 ```powershell
@@ -36,96 +39,97 @@ Expand-Archive tinybrains.zip -DestinationPath "$env:LOCALAPPDATA\tinybrains"   
 | `tinybrains-aarch64-pc-windows-msvc.zip` | Windows on Arm, 64-bit |
 | `tinybrains-x86_64-pc-windows-msvc.zip` | Windows x86-64 |
 
-Every build is 64-bit, and there is **no Intel macOS build**. The binaries are not signed: a file a
-**browser** downloads on macOS is quarantined (`xattr -d com.apple.quarantine tinybrains` clears it),
-and Windows SmartScreen may ask before the first run; `curl`, `Invoke-WebRequest` and Homebrew are
-not affected. From source, with a Rust toolchain, on any platform Rust and wasmtime support:
-`cargo install --locked --git https://github.com/Tiny-Brains/cli`.
+- Every archive holds the binary, `LICENSE` and this README.
+- Every build is 64-bit. There is no Intel macOS build.
+- The binaries are not signed.
+  - On macOS, a file downloaded by a browser is quarantined. To clear it, run
+    `xattr -d com.apple.quarantine tinybrains`.
+  - On Windows, SmartScreen may ask before the first run.
+  - Downloads through `curl`, `Invoke-WebRequest` and Homebrew are not affected.
+- To build from source you need a Rust toolchain. Run
+  `cargo install --locked --git https://github.com/Tiny-Brains/cli`.
 
-Then run it from a game's starter kit, which carries the `games.toml` it reads:
+## Quick start
+
+Run it from a game's starter kit. The kit carries the `games.toml` that `tinybrains` reads:
 
 ```sh
 git clone https://github.com/Tiny-Brains/ants-starter && cd ants-starter
-tinybrains games                               # what is registered, at which engine digest
-tinybrains check model.onnx manifest.json      # what admission will say
-tinybrains matches/self-play.json              # play it; one replay per row
-tinybrains view replays/self-play.json         # watch it
+tinybrains games                            # what is registered, at which engine digest
+tinybrains check model.onnx manifest.json   # what admission will say
+tinybrains matches/self-play.json           # play it: one replay per row, in replays/
+tinybrains view replays/self-play.json      # watch it in a browser
 ```
 
-## Scope
+The first command that needs the game downloads the cartridge release that `games.toml` pins. It
+does this once, and refuses the download unless both digests match.
 
-**It owns**
+**What is the same as the ladder:** the component, the evaluator, the runtime, the head decode,
+`cartridge.json`, the boards and the replay envelope.
 
-- The `tinybrains` binary: playing a match file, `check`, `adapt`, `conform`, `view`, `maps`, and
-  `env`, the cartridge as a training environment.
-- The one Rust copy of Kalam's wave loop (`src/wave.rs`), and `conform`, which proves it agrees.
-- The match-file parser (`src/matchfile.rs`), which is the format's only specification.
-- Resolving a game from a registry: a `path` to an artifact set on disk, or a pinned `release`.
-- Its release: the binaries and the Homebrew formula in `Formula/`.
+**What is different:**
+- models are stored in a local directory, not S3
+- a replay is written to a file, not uploaded to a presigned URL
+- rows come from a file, not from a claim under a lease
 
-**It does not**
+The wave loop is a Rust copy of the ladder's, and `tinybrains conform` checks that the two agree.
 
-- Know any game. It knows five function names, `cartridge.json` and the replay envelope; every
-  board, seat count and limit is read from the manifest or from the board itself.
-- Decide anything the ladder decides. `check` is necessary and not sufficient: there is no download
-  allowlist here, and the size class is reported, never assigned — that table is Soma's.
-- Carry a registry. A project carries its own `games.toml`; a
-  [starter kit](https://github.com/Tiny-Brains/ants-starter) is where one comes from.
+## Commands
 
-## Where it sits
+| Command | What it does |
+|---|---|
+| `tinybrains <match.json>` or `tinybrains run <match.json>` | Plays every row of a match file as one wave, and writes one replay per row to `replays/<id>.json`. It prints ranks, scores and strikes, the mean operations and inference per seat-turn, and the share of the turn deadline the worst seat-turn used. |
+| `tinybrains games` | Prints the registry in use, the datalogic version, and each game's engine digest, source and boards. |
+| `tinybrains maps [GAME]` | Lists the boards the release ships, and the limits a season's board must fit. |
+| `tinybrains maps export [GAME] [DIR]` | Writes those boards out as files, checked against the release's catalogue. The default DIR is `./maps`; to give a DIR you must give GAME first. |
+| `tinybrains maps check <board.json>...` | Checks boards the way a season's upload will: the header, the game's `limits.boards`, then the engine's own `worldgen`. |
+| `tinybrains check <model.onnx> <manifest.json>` | Does admission's checks: the graph's opset, parameters, nodes and operators, and the size metric (artifact bytes + manifest bytes). It then runs every adapter over the game's reference observations under the adapter budget, runs the graph, and reads the head. It exits non-zero on a failure. |
+| `tinybrains adapt <model.onnx> <manifest.json>` | Writes each tensor the manifest's adapters build as a numpy `.npy` file, next to the observation that produced it. Use this to diff your trainer's encoder against the ladder's. |
+| `tinybrains conform <replay.json>` | Rebuilds a recorded match from its envelope, plays it here, and diffs every field and every turn of the action stream. It exits non-zero on a difference. It refuses a replay played on another engine digest. |
+| `tinybrains view <replay.json>` | Serves the game's viewer and the replay on `127.0.0.1`, and opens a browser. |
+| `tinybrains env` | Runs the cartridge as a training environment over JSON Lines (see [`env`](#env-the-training-environment)). |
+| `tinybrains --version`, `--help` | |
 
-```text
-competitor's repository                          GitHub releases
-  games.toml ─────── pins ──────────────────▶  Tiny-Brains/ants  engine-<12 hex>
-  matches/*.json                                  ants-artifacts.tar.gz
-  model.onnx, manifest.json                            │ fetched once, both digests checked
-        │                                              ▼
-        └──────────▶  tinybrains  ◀────── ~/.cache/tinybrains/cartridges/<digest>/
-                          │
-                          ▼
-                  replays/*.json  (Kalam's envelope; `view` draws it, `conform` diffs it)
-```
+| Flag | Commands | Meaning |
+|---|---|---|
+| `--game SLUG` | match, `check`, `adapt`, `conform`, `view`, `env`, `maps check` | Which registry entry to use. The default for a match is the file's `game`. For `view` and `conform` it is the replay's `game`, falling back to `ants`. Otherwise it is the first game in the registry. |
+| `--out DIR` | match, `adapt` | Where the output goes. The default is `./replays` for a match and `./tensors` for `adapt`. `adapt` writes one `case-<i>/` per observation and an `index.json`. |
+| `-v`, `--verbose` | match | Prints every strike and forfeit as it happens, and every seat-turn that ran over the turn deadline. |
+| `--timings` | match | Shows where the wall clock went, phase by phase (see below). |
+| `--json` | `check` | Prints the whole report as one JSON object, for scripts. |
+| `--obs FILE` | `adapt` | Uses these observations instead of the reference set: one observation, an array of them, or `{"observations": [...]}`. |
+| `--no-open` | `view` | Prints the URL without opening a browser. |
 
-| Direction | Party | Over | What moves |
-|---|---|---|---|
-| reads | A project's `games.toml` | the working directory, or `TINYBRAINS_REGISTRY` | Which games exist and where their artifacts are |
-| fetches | [Ants](https://github.com/Tiny-Brains/ants) releases | HTTPS | The cartridge's artifact set, pinned by two digests |
-| fetches | A match file's seats | a path or HTTPS | Weights and manifests, stored under their sha256 |
-| writes | the working directory | files | One replay per row |
+**`--timings`** splits a match's wall clock into phases:
+- registry, cartridge compile, model load, worldgen, observe, adapter, graph, head decode, step,
+  finish and replay write
+- `unaccounted`, whatever is left of the measured wall clock
 
-Who runs it: [ants-starter](https://github.com/Tiny-Brains/ants-starter)'s CI and README, the
-book's quickstart and *Testing* chapter in [web/docs](https://github.com/Tiny-Brains/web/tree/main/docs),
-`ants/baselines` (`env` for training, `adapt` for the conformance test), and `web/docs`' image
-build, which downloads the Linux release archive (`CLI_VERSION`) to play the lesson replays. Nothing
-in the platform's images builds or runs it.
+A second table splits the cartridge calls into instantiate, JSON encode, the wasm call and JSON
+decode. Those calls also appear in the first table. Recording is always on, and only the printing
+waits for the flag.
 
-## Interface
+`infer_us` measures `plan.run` only, not the adapter that fed it. That is the number in a replay's
+`seats` and in `check --json`.
 
-```text
-tinybrains <match.json> [--out DIR] [-v]   play a wave; write one replay per row  [--timings]
-tinybrains games                           what is registered, and at which digest
-tinybrains maps [GAME]                     the boards a release ships
-tinybrains maps export [GAME] [DIR]        write those boards out as files
-tinybrains maps check <board.json>...      would an upload of these be accepted?
-tinybrains view <replay.json>              watch it in a browser
-tinybrains check <model.onnx> <manifest>   would this be admitted?  [--json]
-tinybrains adapt <model.onnx> <manifest>   dump the tensors an adapter produces
-tinybrains conform <replay.json>           replay a recorded match here, and diff
-tinybrains env [--maps IDS|DIR] [...]      the cartridge as a training environment
-tinybrains --version
-```
+## Registry and match files
 
-**The registry** is the first of `$TINYBRAINS_REGISTRY`, `./games.toml`, `./tinybrains.toml` and
-`~/.cache/tinybrains/registry.toml` that exists. An entry is either
+### The registry
+
+`tinybrains` uses the first of these that exists. The binary carries no registry of its own.
+
+1. `$TINYBRAINS_REGISTRY`
+2. `./games.toml`
+3. `./tinybrains.toml`
+4. `registry.toml` in the cache directory (see [Environment variables](#environment-variables))
+
+An entry names either an artifact set on disk or a pinned release:
 
 ```toml
 [games.ants]
 name = "Ants"
-path = "../ants/dist"            # an artifact set on disk: a checkout's dist/, or an unpacked release
+path = "../ants/dist"            # a checkout's dist/, or an unpacked release; relative to this file
 ```
-
-— the digest is whatever the component hashes to, and is reported — or a pinned release, as
-an ants release's notes print it and every starter kit carries it:
 
 ```toml
 [games.ants]
@@ -133,198 +137,205 @@ name = "Ants"
 repo = "Tiny-Brains/ants"
 release = "engine-<12 hex>"
 artifacts = { file = "ants-artifacts.tar.gz", sha256 = "sha256:<64 hex>" }
-engine = "sha256:<64 hex>"       # == games.active_engine_digest
+engine = "sha256:<64 hex>"       # the component's digest: the one the ladder plays
 ```
 
-**The match file** is `K_WAVE`'s rows plus the Orion `[vars]` they run under, so a real claim can be
-dumped to a file and replayed here; a seat may also name `weights`/`manifest` as a path or a URL, or
-be scripted (`"script": ["E", "E", "-"]`). **A row names its board with `map`** — an id the release
-ships (`tinybrains maps`), a path ending `.json` relative to the match file, or the board itself —
-and is refused if it still names a `preset` (N28): the engine carries no boards and the seed no
-longer chooses one. The book's *Testing* §Match files is the competitor-facing copy of
-`src/matchfile.rs`.
+**A `path` entry** wins over a release. Its digest is whatever the component hashes to, and
+`tinybrains games` reports it.
 
-**The boards** a release ships are its basic ones; a season's are uploaded to the platform and are
-in no release (N28), so a match file names one by its path. `tinybrains maps check` asks of a board
-file what Soma's upload asks — inside the cartridge's `limits.boards`, and opened by the engine's own
-`worldgen` — so a folder of season boards is known good before it is uploaded. `tinybrains env`
-draws its boards from `--maps` (ids, paths, or a directory; the release's basic boards by default),
-one board a wave so a wave stacks into one tensor size, in turn from where `--seed` starts them.
+**A release entry** needs all four fields: `repo`, `release`, `artifacts` and `engine`. The archive
+is downloaded from the GitHub release once and unpacked under `cartridges/` in the cache. It is
+refused unless the archive hashes to `artifacts.sha256` and the component inside hashes to `engine`.
+An ants release's notes print this block.
 
-`TINYBRAINS_HOME` moves the cache (models and cartridges) off `~/.cache/tinybrains`.
+### Match files
 
-**`--timings`** breaks a run into the phases it actually spent, against the wall clock it measured,
-so the row that is *not* a phase ("unaccounted") is visible rather than folded into the last one.
-The first group — registry, cartridge compile, model load, worldgen, observe, adapter, graph, head
-decode, step, finish, replay write — is disjoint; the second decomposes the cartridge calls among
-them (instantiate, encode, the wasm call, decode) and double-counts on purpose.
-`TINYBRAINS_PROFILE_NODES=1` adds the graph node by node, at the cost of running it through tract's
-state machine rather than `plan.run`; `TINYBRAINS_TIMINGS_CSV=<path>` writes the per-turn curve,
-which is how you see what grows with the colony and what is set by the board. Recording is always
-on and costs tens of nanoseconds a span; only the printing is behind the flag.
+A match file holds the rows a ladder runner claims, plus the vars they run under:
 
-**Read `infer_us` as the graph alone.** The number in every replay's `seats` and in
-`check --json` is `plan.run` and not the adapter that fed it — on the starter kit the adapter is
-18 µs against 4.3 ms of graph, so the two are worth telling apart. `--timings` is where both are.
+```json
+{
+  "game": "ants",
+  "vars": { "max_turns": 300 },
+  "rows": [
+    { "id": "self-play", "seed": 42, "map": "basic-tiny-2p", "seat_count": 2,
+      "seats": [
+        { "seat": 0, "weights": "../model.onnx", "manifest": "../manifest.json", "label": "mine" },
+        { "seat": 1, "weights": "../model.onnx", "manifest": "../manifest.json", "label": "mine-again" }
+      ] }
+  ]
+}
+```
 
-**What is identical to production**, and this is the point: the component (same file, same digest),
-the evaluator (datalogic, the version `tinybrains games` prints), the runtime (tract), the head
-decode, `cartridge.json`, the boards, and the envelope. What differs is config — a directory model
-store instead of S3, a file instead of a presigned PUT, and rows from a file instead of a claim
-under a lease. **Where it is a copy and not the thing** is the wave loop: Kalam expresses it as an
-Orion workflow and `src/wave.rs` as Rust, which is why `conform` exists.
+**Seats.** A seat names its model in one of three ways:
+- `weights` + `manifest`: a path relative to the match file, or a URL
+- `weights_hash` + `manifest_hash`: digests already in the local store
+- `script`: written orders instead of a model
 
-## Run it, test it
+**Boards.** Every row needs a `map`, given in one of three ways:
+- the id of a board the release ships (`tinybrains maps`)
+- a path ending in `.json`, relative to the match file. This is how you play a season's board.
+- the board itself, inline
+
+A row that names a `preset` is refused. `seat_count` must equal the board's `players`, and every
+row in a file must seat the same number.
+
+**Vars.** `vars` override the game's own numbers, and only the ones you write. The keys are
+`max_turns`, `turn_ms`, `budget_ops` and `strike_ceiling` (default 5).
+
+**Engine digest.** If a top-level `engine_digest` differs from the resolved game's, the run prints
+a warning.
+
+The full field reference is the book's
+[Testing › Match files](https://github.com/Tiny-Brains/web/blob/main/docs/src/models/testing.md#match-files).
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `TINYBRAINS_REGISTRY` | The registry file to use. The lookup above is skipped. |
+| `TINYBRAINS_HOME` | The cache directory. The default is `~/Library/Caches/tinybrains` on macOS, `$XDG_CACHE_HOME/tinybrains` or `~/.cache/tinybrains` on Linux, and `%LOCALAPPDATA%\tinybrains` on Windows. |
+| `TINYBRAINS_PROFILE_NODES` | When set to any value, the graph runs node by node through tract's state machine instead of `plan.run`, and `--timings` lists the slowest nodes. Inference gets a little slower. |
+| `TINYBRAINS_TIMINGS_CSV` | A file path. With `--timings` on a match, the time spent in each phase on each turn is also written there as CSV. |
+
+The cache holds:
+- `models/weights/` and `models/manifests/`: every model a match or `check` read, stored under its
+  sha256
+- `cartridges/<digest>/`: unpacked releases
+- optionally, a `registry.toml`
+
+## `env`: the training environment
 
 ```sh
-cargo build --release                              # rust-toolchain.toml pins the compiler
-cargo fmt --check && cargo clippy --locked --release -- -D warnings
-cd ../ants-starter && ../cli/target/release/tinybrains matches/self-play.json   # a registry to run against
+tinybrains env --maps basic-tiny-2p,basic-small-3p --waves 4 --matches-per-wave 16
 ```
 
-There are **no unit tests**. `.github/workflows/check.yml` runs format, lint and a locked build on
-every push, then plays `ants-starter` with the binary it just built — `games`, `check`, and its
-self-play match — which also exercises the release fetch. The check that matters for `src/wave.rs`
-is `tinybrains conform <replay>` against a replay the ladder wrote: it rebuilds the match from the
-envelope alone, plays it here, and diffs every field and every turn of the action stream.
+`env` puts the real cartridge behind JSON Lines on stdin and stdout, one object per line. The first
+line out is `hello`, which carries:
+- the engine digest and the evaluator
+- the boards
+- the game's limits and budgets
+- the run's settings
 
-To play against a local cartridge build, point `TINYBRAINS_REGISTRY` at a registry whose entry is a
-`path` to that checkout's `dist/`. `tinybrains games` always says which way it resolved.
+The requests are:
+- `{"op":"observe"}` returns every live seat's observation and, by default, every live match's
+  score.
+- `{"op":"step","actions":[...]}` advances every wave one turn. It answers like `observe`, and
+  also lists in `ended` the matches that just finished.
+- `{"op":"close"}` stops.
 
-### Releasing
+**Actions** are positional, one per seat in the order the last `observe` returned. Each action is
+either an array of order strings, or a string with one character per ant in `mine` order. Any
+character except `N`, `E`, `S` and `W` holds.
+
+**Errors are fatal.** An error prints one `{"ok":false,"error":...}` line and exits 1. Diagnostics
+go to stderr.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--game SLUG` | first registry entry | |
+| `--maps IDS\|DIR` (or `--map`) | every board the release ships | Comma-separated board ids or `.json` paths, or a directory of boards. Each wave plays one board, and waves take the boards in turn from where `--seed` starts them. |
+| `--waves N` | 4 | Independent waves, played in parallel across cores. A wave is refilled when all its matches end. |
+| `--matches-per-wave N` | 16 | |
+| `--max-turns N` | the game's `max_turns` | |
+| `--seed N` | 1 | The root seed. Every match seed and board choice descends from it. |
+| `--scores every\|end` | `every` | `every` reports each live match's score on every turn. That costs one extra `finish` call per wave per turn, about 29% of throughput. `end` reports scores only when a match ends. |
+
+**`env` is not the referee.** It has no turn deadline, no strike ceiling, no forfeits and no
+adapter evaluation, so a result from it is not a result. `tinybrains check` and a played match are
+the gates. Scores are there for the trainer's reward, and they never reach a model's input.
+
+## Building from source
+
+```sh
+cargo build --release                               # rust-toolchain.toml pins rustc exactly
+cargo fmt --check
+cargo clippy --locked --release -- -D warnings
+```
+
+There are no unit tests. On every push to `main` and on every pull request,
+`.github/workflows/check.yml` does two things:
+- it runs format, lint and a locked build
+- it clones [ants-starter](https://github.com/Tiny-Brains/ants-starter) and runs `games`, `check`
+  and the starter's self-play match with the new binary, which also exercises the release fetch
+
+For `src/wave.rs`, the check that matters is `tinybrains conform` on a replay the ladder wrote.
+
+To play against a local cartridge build, write a registry whose entry is
+`path = "<ants checkout>/dist"`, and point `TINYBRAINS_REGISTRY` at it.
+
+## Releasing
 
 ```sh
 # bump `version` in Cargo.toml, commit to main, push, then:
-gh workflow run release.yml                  # the rehearsal: every target built and played, nothing published
+gh workflow run release.yml                  # rehearsal: every target built and played, nothing published
 git tag v0.2.0 && git push origin v0.2.0     # the release
 ```
 
-`.github/workflows/release.yml` refuses a tag that disagrees with `Cargo.toml` or is not on `main`;
-builds the five targets, each natively on its own runner (`macos-26`, `ubuntu-22.04`,
-`ubuntu-22.04-arm`, `windows-2025`, `windows-11-arm`), and plays the starter kit with every binary;
-publishes the archives and `SHA256SUMS` on a GitHub
-release; renders `Formula/tinybrains.rb` from the checksums **it downloads from that release** with
-`scripts/formula.sh` and commits it to `main`; then installs through Homebrew from the tap and runs
-the formula's test.
+A `v*` tag runs `.github/workflows/release.yml`, which:
 
-## What a deployment owes it
+1. refuses a tag that disagrees with `Cargo.toml` or is not on `main`
+2. builds each target natively on its own runner and plays the starter kit with each binary
+3. publishes the archives and `SHA256SUMS` on a GitHub release
+4. renders `Formula/tinybrains.rb` with `scripts/formula.sh` from the `SHA256SUMS` it downloads
+   from that release, and commits it to `main`
+5. installs from the tap on macOS and runs the formula's test
 
-- **Its `datalogic-rs` tracks what orion-server links.** An adapter is priced by datalogic on a
-  node and here; a version skew is a local pass and a remote refusal. `tinybrains games` prints the
-  version, and `DATALOGIC_VERSION` in `src/model.rs` is the string it prints.
-- **A cartridge release is never re-cut.** A registry pins the archive's digest, so a replaced file
-  is a refusal on every clone that pinned it.
-- **Kalam's replay envelope and wave rules move with `src/wave.rs`.** A change to Kalam's claim,
-  strike, forfeit or rank rules is a change here in the same batch, and `conform` is what shows
-  whether it was made.
+Things to know before you release:
+- **Never re-cut a tag.** The formula and every pinned download name the archive's sha256. A bad
+  release is a new version. Rehearse first.
+- **This repository is the Homebrew tap.** `Formula/` is written by the workflow only, and a hand
+  edit is overwritten by the next release.
+- **The formula commit starts no workflow**, because it is pushed with `GITHUB_TOKEN`. If branch
+  protection refuses that push, re-run the `formula` job, not the tag.
+- **The book pins its own CLI version.** `web/docs/Dockerfile` downloads the Linux archive at
+  `CLI_VERSION`. Bump it there when the lessons need a newer CLI.
 
 ## Layout
 
 ```text
 src/main.rs            dispatch and usage
-src/cmd/               one file per verb
+src/cmd/               one file per command
 src/cartridge.rs       the component, hosted through wasmtime; knows no game
-src/wave.rs            the wave loop: the one allowed copy of Kalam's
-src/env.rs             the training environment: a pool of waves, deliberately no referee
-src/matchfile.rs       the match-file format's only specification
-src/model.rs, onnx.rs  datalogic adapters, tract graphs, the head decode
+src/wave.rs            the wave loop: the one copy of Kalam's
+src/env.rs             the training environment: a pool of waves, no referee
+src/matchfile.rs       the match-file format's specification
+src/model.rs, onnx.rs  datalogic adapters, tract graphs, the head decode, graph stats
 src/registry.rs        games.toml: a path or a pinned release
-src/store.rs           the content-addressed cache under ~/.cache/tinybrains
-src/timing.rs          where a run's wall clock went: --timings
-src/serve.rs           `view`'s local server for the cartridge's own viewer
+src/store.rs           the content-addressed cache
+src/timing.rs          --timings
+src/serve.rs           the local server `view` uses
 wit/                   the plugin ABI the component exports
-scripts/formula.sh     the Homebrew formula, rendered from a release's SHA256SUMS
-Formula/               the tap: written by the release workflow, never by hand
+scripts/formula.sh     renders the Homebrew formula from a release's SHA256SUMS
+Formula/               the tap, written by the release workflow
 .github/workflows/     check.yml on every push; release.yml on a v* tag
 ```
 
-## What must stay true
+## Invariants
 
-- **The CLI knows no game.** It never links an engine crate and never names a cartridge's types; a
-  second game is a registry entry. If that stops being true the seam has quietly moved.
-- **A local result and a ladder result are the same match.** `tinybrains conform` is the check, and
-  `src/wave.rs` is the only place a copy of Kalam's loop is allowed to live.
-- **`env` is not a referee.** No deadline, no strike ceiling, no forfeits, no adapter evaluation —
-  which is why its actions can be positional, and why a result from it is not a result.
-- **The binary carries no path of the machine that built it.** No built-in registry, no
-  `CARGO_MANIFEST_DIR` lookups: a released binary runs on someone else's laptop.
-- **The archive names are an interface.** `tinybrains-<target>.tar.gz`, or `.zip` for Windows,
-  flat, with the binary at the top: the formula, `releases/latest/download/` links, ants-starter's
-  CI, `web/docs/Dockerfile` and the book's install lines name them.
-- **A tag is a version and is never re-cut.** `v<version>` equals `Cargo.toml`, and a bad release is
-  a new version, because the formula and every pinned download name the archive's sha256.
+- **The CLI knows no game.** It never links an engine crate or names a cartridge's types. A second
+  game is a registry entry, not Rust.
+- **A local result and a ladder result are the same match.** `src/wave.rs` is the only copy of
+  Kalam's wave loop. A change to Kalam's claim, strike, forfeit or rank rules is a change here in
+  the same batch, and `conform` shows whether it was made.
+- **The binary carries no path of the machine that built it.** There is no built-in registry and
+  no `CARGO_MANIFEST_DIR` lookup.
+- **The archive names are an interface.** Archives are named `tinybrains-<target>.tar.gz`
+  (`.zip` on Windows), with no version in the name and the binary at the top. The formula,
+  `releases/latest/download/` links, ants-starter's CI, `web/docs/Dockerfile` and the book's
+  install lines all depend on these names.
+- **`datalogic-rs` tracks what orion-server links.** A node and this binary both price an adapter
+  with datalogic, so a version skew means a local pass and a remote refusal. `DATALOGIC_VERSION` in
+  `src/model.rs` is what `games` prints; bump it together with the dependency, and only with Orion.
 
-## Status
+## Known gaps
 
-**19 September 2026 — boards, not presets (N28).** The engine carries no boards any more, so
-this binary hands `worldgen` every board whole: a match file's row names its board with `map` (an id
-the release ships, a path, or inline) and a row still naming a `preset` is refused with the way out;
-`wave.rs` sends `maps` and never `preset`; `tinybrains env` takes `--maps` (ids, paths, or a
-directory) in place of `--preset`, says `maps` in its hello and `map` on an ended episode, and draws
-a board a wave in turn from the seed; `tinybrains maps check` is new and judges a board file the way
-Soma's upload will. Checked against a local ants build: all 32 of season 1's boards pass
-`maps check`, a broken one is refused in the engine's words, a match on a basic board and one on a
-season board by path play, and the starter kit's two match files play and `conform` IDENTICAL. The
-same binary still plays, conforms and trains against the old `engine-df312c0458d9` release, whose
-boards carry presets — it passes them whole, which an engine of any age accepts. **Not released**:
-the release waits for the ants release it pairs with.
+- **The seats of a turn are inferred one after another.** `Model` is `Send + Sync`, so a worker per
+  seat only needs the run's model cache (`Models`, which uses `Rc`/`RefCell`) made thread-safe.
+- **The release profile is `opt-level = 2`.** `opt-level = 3` with fat LTO measured about 5% faster
+  graph time, but it added about 12 minutes to the build.
+- **The compiled component is not cached between runs.** Every process compiles the cartridge
+  again, which takes about 120 ms on an M2 Pro.
 
-**18 September 2026 — a run says where its wall clock went (`--timings`).** The binary had one
-timer, around `plan.run`, reported as `infer_us`; everything else a match spends was unmeasured.
-`src/timing.rs` is now a set of lock-free accumulators written from the four places a match spends
-time — the cartridge host, datalogic, tract and the loop between them — and printed on `--timings`
-against the wall clock the command measured, so an unaccounted remainder shows as its own row.
-`TINYBRAINS_PROFILE_NODES=1` adds the graph node by node and `TINYBRAINS_TIMINGS_CSV` the per-turn
-curve. Recording is unconditional and costs tens of nanoseconds a span; a normal run prints exactly
-what it printed before.
+## License
 
-What it says about ants-starter's self-play match (300 turns, 600 seat-turns, an M2 Pro): **the
-graph is 88% of it**, flat at 8.1 ms a turn from turn 0 to turn 300 — the model is fully
-convolutional over the whole board, so its cost is the board's and not the colony's. Inside the
-graph, **`Im2col` costs more than the matmul it feeds** (52% against 46%), which is what a
-nine-channel convolution looks like: the packing is memory-bound and the arithmetic is not the work.
-The f16 weight casts are constant-folded and cost nothing. Everything that does scale with the
-colony — observe 188→440 µs, the adapter 30→42 µs, the head decode 9→11 µs — is noise beside it. The
-adapter is 18 µs a seat-turn against 4.3 ms of graph, so a manifest's operation budget is not where
-a local run's time goes. One-offs: the cartridge compiles in 118 ms and a fresh wasm instance per
-call is 70 µs × 603.
-
-Open, in rough order of what it would buy: the seats of a turn are independent inferences played
-one after the other (a worker per seat needs a `Model` per thread — datalogic's `Engine` holds a
-`Box<dyn CustomOperator>` and is not `Send`); `opt-level = 3` with fat LTO measured 5% off the graph
-and some twelve minutes onto the build, which is why the profile is still `opt-level = 2`; and
-wasmtime's compiled component could be cached rather than recompiled per process.
-
-**17 September 2026 (later) — the dependency set is the minimum, with features gated.** Before the
-first release, every direct dependency was checked for what the binary actually calls:
-`tract-libcli` went — one shape-spec helper, now `input_fact` in `src/model.rs`, had been pulling in
-clap, tflite, npy/zip and tract's GPU and Metal backends — and so did `dirs` (four lines of
-environment lookups in `src/store.rs`, same directories, and no second `windows-sys` on Windows).
-`bumpalo` and `datavalue-rs` are taken through datalogic's re-exports; `ureq` is 3.x with rustls
-only, which drops `url`/`idna` and some twenty ICU crates; `toml` is 1.x with the parser and serde
-only, which also ends 0.9's two copies of `winnow`; `tar` has no xattr, and `serde`, `serde_json`,
-`prost`, `sha2` and `flate2` build without default features. The build went from 276 crates to 207
-on macOS, 269 to 212 on Linux and 273 to 211 on Windows; `Cargo.lock` from 342 packages to 257. What
-remains is wasmtime with cranelift and tract, which are the product, and the duplicates left are
-inside them. **Nothing a match produces moved**: the starter kit's `check` (323,559 operations
-worst case) and both its match files give replays identical to the previous build's in every field
-but the inference timings.
-
-**17 September 2026 — the CLI is a repository of its own, and ships binaries.** It moved out of
-`devops/cli` with its history (`git filter-repo`, 25 commits), because nothing in it was deployment:
-the stack never ran it, its one devops coupling was a built-in fallback to `../games/registry.toml`
-that baked the build machine's path into every binary, and a competitor needed a Rust toolchain to
-install it. That fallback is gone — a registry is the project's, and `devops/games/registry.toml`
-is now read only where it is named. `tinybrains --version` is new, and `view` refuses a drive or a
-backslash in a request path, which Windows would otherwise let out of the viewer's directory. A `v*`
-tag publishes 64-bit binaries for macOS 26+ on Apple silicon (no Intel macOS build), Linux and
-Windows on arm64 and x86-64, and a Homebrew formula in this repository's own tap; ants-starter's CI
-downloads the release instead of compiling. **There is no artifact image any more**: `web/docs`
-downloads the pinned Linux release, and DevOps' `cli` build service is gone. Earlier history is in
-this repository's log and in DevOps' README Status.
-
-## More
-
-- [`DECISIONS.md`](DECISIONS.md) — N23 is why this repository exists; 47 is why `env` is a verb.
-- [ants-starter](https://github.com/Tiny-Brains/ants-starter) — where to run it from.
-- Apache-2.0: see [LICENSE](LICENSE).
+Apache-2.0: see [LICENSE](LICENSE).

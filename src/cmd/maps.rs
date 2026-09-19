@@ -1,7 +1,7 @@
 //! `tinybrains maps`: the boards a release ships, written out -- and a board checked the way the
 //! platform checks an upload.
 //!
-//! **A season's boards are in no release** (N28). An admin uploads them to Soma, which refuses one
+//! **A season's boards are in no release.** An admin uploads them to Soma, which refuses one
 //! outside the cartridge's `limits.boards` and asks the engine's own `worldgen` whether it can be
 //! played. `maps check` asks the same two things of a file on a laptop, so a folder of season boards
 //! is known good before anyone uploads it -- and the envelope is the cartridge's, read from
@@ -155,7 +155,7 @@ fn judge(game: &Game, cart: &Cartridge, board: &Value) -> Result<String, String>
     Ok(format!("{id}  {rows}x{cols}  {players} seats"))
 }
 
-/// `limits.boards` in words, or nothing for a release from before N28.
+/// `limits.boards` in words, or nothing for an older release that declares none.
 pub fn envelope_line(game: &Game) -> Option<String> {
     let env = game.envelope()?;
     let pair = |k: &str| -> String {

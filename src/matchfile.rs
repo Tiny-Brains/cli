@@ -9,7 +9,7 @@
 //! `weights_hash`/`manifest_hash`. A file that uses only hashes is byte-compatible with the
 //! database. Self-play, an older version, a downloaded release and a baseline all fall out of that.
 //!
-//! **A row names its board, and there are no presets** (N28, `soma/docs/decisions.md`). The claim hands
+//! **A row names its board, and there are no presets.** The claim hands
 //! a runner the board itself; a file may too, or name one: an id the release ships (`tinybrains
 //! maps`), or a path ending `.json`, relative to this file -- which is how a season's board, uploaded
 //! to the platform and in no release, is played on a laptop. `resolve_boards` turns every name into
@@ -87,7 +87,7 @@ impl MatchFile {
     }
 
     /// Every row's board, whole, from whatever the file named it by -- and each one checked to
-    /// seat the row's seats. A board's seat count is the board's (decision 14), so a row that
+    /// seat the row's seats. A board's seat count is the board's own, so a row that
     /// disagrees is refused here rather than by `worldgen`, where it would name no row.
     pub fn resolve_boards(&mut self, game: &Game) -> Result<(), String> {
         for row in &mut self.rows {
@@ -128,11 +128,11 @@ impl Row {
             .get("seed")
             .and_then(Value::as_u64)
             .ok_or_else(|| format!("row '{id}': no `seed`"))?;
-        // Refused by name rather than ignored: a file written before N28 names a preset and
-        // relied on the seed to choose a board from its pool, and there is no pool any more.
+        // Refused by name rather than ignored: an older file names a preset and relied on the
+        // seed to choose a board from its pool, and there is no pool any more.
         if r.get("preset").is_some() {
             return Err(format!(
-                "row '{id}': `preset` is gone -- the engine carries no boards to pool (N28).\n\
+                "row '{id}': `preset` is gone -- the engine carries no boards to pool.\n\
                  Name the board with `map`: an id from `tinybrains maps`, a path to a board's \
                  .json, or the board itself."
             ));

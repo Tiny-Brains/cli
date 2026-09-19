@@ -34,10 +34,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let manifest: Value =
         serde_json::from_slice(&mb).map_err(|e| format!("{}: not JSON: {e}", files[1]))?;
 
-    // S' -- the bytes the node measures against a digest it re-hashes, plus the document the
-    // submission forwards (decision R4). Both terms are unforgeable, which the old metric's
-    // first term was not: it compressed initializers, and a graph can carry its weights
-    // somewhere else.
+    // The size metric: the bytes the node measures against a digest it re-hashes, plus the
+    // document the submission forwards. Both terms are unforgeable, which a metric over
+    // compressed initializers would not be: a graph can carry its weights somewhere else.
     let size_metric = wb.len() + mb.len();
 
     if !json_out {
@@ -130,9 +129,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
                         "    little headroom -- a busier board than any of these would exceed it"
                     );
                 }
-                // Reported, never a gate: there is no compute cap (devops decision 46), and wall
-                // clock belongs to whichever machine ran it. It is here because the TURN DEADLINE
-                // is what a graph too expensive to play runs into.
+                // Reported, never a gate: no weight class caps compute, and wall clock belongs to
+                // whichever machine ran it. It is here because the TURN DEADLINE is what a graph
+                // too expensive to play runs into.
                 println!(
                     "    slowest graph    {:.2} ms of inference  (measured here, not a threshold: \
                      no class caps compute)",

@@ -14,7 +14,7 @@
 #   aarch64-pc-windows-msvc     tinybrains-aarch64-pc-windows-msvc.zip        Windows on Arm
 #   x86_64-pc-windows-msvc      tinybrains-x86_64-pc-windows-msvc.zip
 #
-# There is no Intel macOS build, by decision. Every target is built natively on its own runner, so
+# There is no Intel macOS build. Every target is built natively on its own runner, so
 # every binary plays the starter kit before anything is published.
 #
 # A TAG IS NEVER RE-CUT. The formula and anyone's pinned download name the archive's sha256, so

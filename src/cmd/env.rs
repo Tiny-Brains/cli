@@ -51,7 +51,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             // One board is a pool of one; `--map` stays as the spelling a single one reads best in.
             "--maps" | "--map" => maps = Some(value(args, i)?),
             "--preset" => {
-                return Err("--preset is gone -- the engine carries no boards to pool (N28). \
+                return Err("--preset is gone -- the engine carries no boards to pool. \
                             Name the boards with --maps: ids from `tinybrains maps`, paths, or a \
                             directory of boards"
                     .to_string());

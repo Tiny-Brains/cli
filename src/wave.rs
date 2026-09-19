@@ -107,7 +107,7 @@ pub fn run(
 
     // One worldgen with every seed: that is what makes this a wave and not a loop over matches, so
     // one batched play call per turn serves every match a model is in. Each row's board goes whole,
-    // as the claim hands it to a runner: the component carries none to look one up in (N28), and
+    // as the claim hands it to a runner: the component carries none to look one up in, and
     // `MatchFile::resolve_boards` has already turned every name into a board.
     let world = json!({
         "seeds": mf.rows.iter().map(|r| r.seed).collect::<Vec<_>>(),
@@ -203,10 +203,10 @@ pub fn run(
             };
             let model = models.get(&weights, &manifest)?;
 
-            // ONE SEAT, ONE INFERENCE -- the shape `tb-match` has since the wave went (decision
-            // R7). The failure is the competitor's and not the run's: an adapter that throws, a
-            // graph that will not run, a head the platform cannot read all leave `action` null,
-            // which is a strike and a no-op, exactly as a node would score it.
+            // ONE SEAT, ONE INFERENCE -- the shape `tb-match` has. The failure is the
+            // competitor's and not the run's: an adapter that throws, a graph that will not run, a
+            // head the platform cannot read all leave `action` null, which is a strike and a
+            // no-op, exactly as a node would score it.
             let mut ops = 0;
             let mut infer_us = 0;
             let action = match model.infer(&v["view"], budget_ops) {
@@ -368,7 +368,7 @@ fn distinct_models(mf: &MatchFile) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The head, read the way the platform reads it (decision R3).
+/// The head, read the way the platform reads it (`model::decode`).
 fn read_head(inf: &crate::model::Inference, view: &Value) -> Option<Value> {
     let (shape, values) = inf.f32_output("policy")?;
     let mine: Vec<(usize, usize)> = view["mine"]

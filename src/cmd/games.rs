@@ -23,8 +23,8 @@ fn describe(slug: &str, g: &Game) {
     println!("    engine  {}", g.engine_digest);
     println!("    from    {}", g.source);
     println!("    boards  {} shipped (`tinybrains maps`)", g.catalogue().len());
-    // A season's boards are uploaded, not shipped (N28), and must fit what the release's own boards
-    // span; a release from before then declares nothing, and says so by saying nothing.
+    // A season's boards are uploaded, not shipped, and must fit what the release's own boards
+    // span; an older release declares nothing, and says so by saying nothing.
     if let Some(e) = crate::cmd::maps::envelope_line(g) {
         println!("    season  a board may be {e}");
     }

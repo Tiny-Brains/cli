@@ -1,7 +1,7 @@
 //! `tinybrains adapt` — run a manifest's input adapters and write out the tensors they produced.
 //!
-//! **This exists because an adapter is half of what plays, and until now nothing could show you
-//! what it actually produced.** `check` reports shapes; a competitor training in Python encodes
+//! **This exists because an adapter is half of what plays, and nothing else shows you what it
+//! actually produced.** `check` reports shapes; a competitor training in Python encodes
 //! observations twice — once in the manifest's adapters for the ladder and once in numpy for the
 //! trainer — and two implementations of one encoding is the classic way to ship a model that
 //! scores worse in the arena than it did in training. This is the tool that lets the two be

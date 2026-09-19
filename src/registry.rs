@@ -1,8 +1,8 @@
 //! Which games exist, and where their artifacts are.
 //!
-//! The same four things devops' `compose/loader/run.sh` writes onto the `games` row, in a file, so the CLI resolves
-//! a game with no database and no network -- and the digest a competitor plays against is the same
-//! string the ladder pins.
+//! What the platform records on its `games` row, in a file, so the CLI resolves a game with no
+//! database and no network -- and the digest a competitor plays against is the same string the
+//! ladder pins.
 //!
 //! An entry resolves by `path` (a cartridge's artifact set on disk -- a checkout's `dist/`, or an
 //! unpacked release; the digest is whatever the file hashes to) or by `release` (the
@@ -12,7 +12,7 @@
 //!
 //! One archive rather than a file per artifact, because the consumers read a tree: `check` wants
 //! `reference/`, `view` wants `viz/`, `maps export` wants `maps/`. A release that pinned only the
-//! component and the manifest could play a match and do nothing else, which is what it used to do.
+//! component and the manifest could play a match and do nothing else.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -62,8 +62,8 @@ pub struct Game {
     /// and the catalogue of the boards the release ships.
     pub manifest: Value,
     /// Where the boards the release ships live as files -- for Ants, the five basic boards. A
-    /// season's boards are never here: they are uploaded to the platform and are in no release
-    /// (N28), so a match file names one by path instead.
+    /// season's boards are never here: they are uploaded to the platform and are in no release,
+    /// so a match file names one by path instead.
     pub maps_dir: Option<PathBuf>,
     pub source: String,
 }
@@ -78,10 +78,9 @@ impl Registry {
     /// `games.toml` in the working directory first: a project carries its own games the way it
     /// carries its own matches, so a clone of a game's starter kit needs no environment variable.
     ///
-    /// There is no built-in registry. There used to be one, `CARGO_MANIFEST_DIR/../games/`, which
-    /// was devops' copy while this crate lived there -- and which baked the BUILD machine's path
-    /// into every binary, so a released one looked for a CI runner's directory on a competitor's
-    /// laptop. A registry is the project's, never the binary's.
+    /// There is no built-in registry, and there must not be one: a path compiled into the binary
+    /// is the BUILD machine's, so a released one would look for a CI runner's directory on a
+    /// competitor's laptop. A registry is the project's, never the binary's.
     pub fn find() -> Result<PathBuf, String> {
         if let Ok(p) = std::env::var("TINYBRAINS_REGISTRY") {
             return Ok(PathBuf::from(p));
@@ -255,8 +254,8 @@ impl Game {
             .unwrap_or_default()
     }
 
-    /// One board the release ships, whole, by id: what `worldgen` must be handed now that the
-    /// component carries no boards of its own (N28).
+    /// One board the release ships, whole, by id: what `worldgen` must be handed, because the
+    /// component carries no boards of its own.
     pub fn board(&self, id: &str) -> Result<Value, String> {
         // An id is a file name under `maps/` and nothing else, so it cannot be a way out of it.
         if id.is_empty() || id.contains(['/', '\\', ':']) || id.starts_with('.') {
@@ -300,7 +299,7 @@ impl Game {
     }
 
     /// The envelope a season's board must fit (`limits.boards`), when the cartridge declares one.
-    /// A release from before N28 declares none.
+    /// An older release declares none.
     pub fn envelope(&self) -> Option<&Value> {
         self.manifest.get("limits").and_then(|l| l.get("boards")).filter(|b| b.is_object())
     }

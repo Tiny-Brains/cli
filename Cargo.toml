@@ -26,7 +26,7 @@ path = "src/main.rs"
 # Compile time is wasmtime + cranelift and tract, which are the product; everything else is kept to
 # the minimum so it adds little to them. Before adding a crate, check `cargo tree -i` for one
 # already in the tree, and whether a crate here re-exports it (datalogic re-exports `bumpalo` and
-# `datavalue`). What was cut, and why, is README.md's Status.
+# `datavalue`). Never take a command-line or tooling crate for one helper.
 [dependencies]
 # Matching what orion-server runs, so the component is executed here by the same runtime that
 # executes it in production. `runtime` + `cranelift` to compile and call it, `component-model` for

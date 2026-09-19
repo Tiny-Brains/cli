@@ -27,7 +27,7 @@
 //! **Nothing here knows what game it is running.** Four function names, the boards the pool is
 //! given, and JSON in both directions.
 //!
-//! **The pool is boards, not presets** (N28). The component carries no boards, so every wave is
+//! **The pool is boards, not presets.** The component carries no boards, so every wave is
 //! handed one, whole: by default the release's basic boards, or whatever `--maps` names -- a
 //! season's boards from a folder among them, which is how a trainer practises on what the ladder
 //! plays. The seed chose a board from a preset's pool inside the engine; it chooses one from this
@@ -76,8 +76,8 @@ pub struct Config {
     /// from this number and the action stream and nothing else.
     pub seed: u64,
     /// Drawn from by wave. Every match of a wave is played on one board, so a wave's views stack
-    /// into one tensor size and a mixed pool mixes by wave -- as a preset pool used to. On the
-    /// ladder pair chooses the board, never the competitor; choosing here is a local facility.
+    /// into one tensor size and a mixed pool mixes by wave. On the ladder pair chooses the board,
+    /// never the competitor; choosing here is a local facility.
     pub boards: Vec<Board>,
     pub scores_every_turn: bool,
 }

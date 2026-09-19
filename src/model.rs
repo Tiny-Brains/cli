@@ -1,7 +1,6 @@
 //! A submitted model, run here the way a node runs it.
 //!
-//! This is the half of the CLI that used to be `axon` as a library. It is the same two libraries a
-//! node uses and in the same order — **datalogic** evaluates the manifest's adapters, **tract**
+//! It is the same two libraries a node uses and in the same order — **datalogic** evaluates the manifest's adapters, **tract**
 //! runs the ONNX graph — so `tinybrains check` answers the question admission will answer, rather
 //! than a local approximation of it.
 //!
@@ -12,7 +11,7 @@
 //! dimension bound on first sight and equal at every later one.
 //!
 //! The one thing here that IS the platform's rather than Orion's is [`decode`]: the head is read
-//! by the platform (decision R3), because a `result` expression's root is the output tensors alone
+//! by the platform, because a `result` expression's root is the output tensors alone
 //! and so cannot reach the observation the gather needs. Kalam does it in JSONLogic and this does
 //! it in Rust; `tinybrains conform` is what keeps the two honest.
 
@@ -194,7 +193,7 @@ impl Model {
         }
         if !manifest["result"].is_null() {
             return Err("a manifest may not carry a `result` expression: the platform reads the \
-                        head (decision R3), so a result would be ignored at play and is refused here"
+                        head, so a result would be ignored at play and is refused here"
                 .to_string());
         }
         let name = manifest["name"].as_str().unwrap_or("model").to_string();
@@ -375,7 +374,8 @@ impl Model {
     }
 }
 
-/// THE PLATFORM READS THE HEAD (decision R3), and this is that rule in Rust.
+/// THE PLATFORM READS THE HEAD, and this is that rule in Rust. A manifest's `result` expression
+/// sees only the output tensors, never the observation the gather needs.
 ///
 ///   `[1, 5, H, W]`  per-cell: gather the ants' flat indices out of the channel-major plane and
 ///                   take the argmax over the five channels.

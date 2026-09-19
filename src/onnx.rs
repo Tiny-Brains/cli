@@ -11,8 +11,8 @@
 //! document carries, wherever it carries it** — initializers, the tensors and repeated scalar
 //! lists a node holds in its attributes, and the bodies of `If`, `Loop` and `Scan`. A graph that
 //! moves its weights into `Constant` nodes, or an `ai.onnx.ml` model whose whole forest travels in
-//! attributes, counts the same as the honest exporter's. Counting initializers alone is exactly
-//! the hole `axon` had.
+//! attributes, counts the same as the honest exporter's. Counting initializers alone would let a
+//! graph hide its weights.
 
 use std::collections::BTreeSet;
 

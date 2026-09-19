@@ -127,8 +127,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
             report.max_infer_us as f64 / 1000.0,
         );
         // THE WHOLE TURN, not a share of it. A seat is one `model_infer` call with its own
-        // `timeout_ms` since the wave went (decision R7) -- there is no shared deadline to divide,
-        // and a seat that exceeds the turn strikes by itself rather than starving the others.
+        // `timeout_ms` -- there is no shared deadline to divide, and a seat that exceeds the turn
+        // strikes by itself rather than starving the others.
         let deadline = mf.var("turn_ms", game.limit("turn_ms", 1000));
         println!(
             "turn deadline {} ms a seat: worst seat-turn used {:.1}%",
