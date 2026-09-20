@@ -203,7 +203,7 @@ pub fn run(
             };
             let model = models.get(&weights, &manifest)?;
 
-            // ONE SEAT, ONE INFERENCE -- the shape `tb-match` has. The failure is the
+            // ONE SEAT, ONE INFERENCE -- the shape `kalam-match` has. The failure is the
             // competitor's and not the run's: an adapter that throws, a graph that will not run, a
             // head the platform cannot read all leave `action` null, which is a strike and a
             // no-op, exactly as a node would score it.

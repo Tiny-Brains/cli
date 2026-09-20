@@ -70,7 +70,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 ops_max = ops_max.max(inf.peak_ops);
                 infer_us_max = infer_us_max.max(inf.infer_us);
                 // The head has to be one the platform can gather from, so `check` reads it exactly
-                // as `tb-match` does rather than merely noting that something came back.
+                // as `kalam-match` does rather than merely noting that something came back.
                 if let Err(e) = head_reads(&inf, obs) {
                     failure = Some((i, e, false));
                     break;
@@ -162,7 +162,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Read the head the way `tb-match` reads it, and say why if it cannot.
+/// Read the head the way `kalam-match` reads it, and say why if it cannot.
 fn head_reads(inf: &crate::model::Inference, obs: &Value) -> Result<(), String> {
     let (shape, values) = inf
         .f32_output("policy")
