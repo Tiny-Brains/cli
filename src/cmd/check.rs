@@ -86,7 +86,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
         }
     }
-    let ok = failure.is_none();
+    // ADMISSION'S ONE TIMING GATE, run as a node runs it: PROBE_RUNS inferences over zero-filled
+    // inputs at the manifest's probe_dims, their median inside the game's turn. The admitting
+    // runner's models.max_probe_ms IS that turn_ms (web's configs.sh checks it), so this compares
+    // against the same number with no copy of it. Measured on this machine: the runner measures
+    // again, and a model slow there on every attempt expires PROBE_TOO_SLOW.
+    let probe = model.probe();
+    let probe_ok = matches!(&probe, Ok((ms, _)) if *ms <= deadline as f64);
+    let ok = failure.is_none() && probe_ok;
 
     if json_out {
         // Machine-readable, for a repository that automates this -- exporting a model into a
@@ -118,6 +125,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 "failing_case": failure.as_ref().map(|(i, ..)| *i),
                 "reason": failure.as_ref().map(|(_, e, _)| e.clone()),
                 "over_budget": failure.as_ref().map(|(.., o)| *o),
+                "probe": {
+                    "ok": probe_ok,
+                    "runs": crate::model::PROBE_RUNS,
+                    "median_ms": probe.as_ref().ok().map(|(ms, _)| *ms),
+                    "limit_ms": deadline,
+                    "dims": probe.as_ref().ok().map(|(_, dims)| dims.clone()),
+                    "error": probe.as_ref().err(),
+                },
             }))
             .map_err(|e| e.to_string())?
         );
@@ -132,12 +147,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
                         "    little headroom -- a busier board than any of these would exceed it"
                     );
                 }
-                // Reported, never a gate: no weight class caps compute, and wall clock belongs to
-                // whichever machine ran it. It is here because the TURN DEADLINE is what a graph
-                // too expensive to play runs into.
+                // Reported, never a gate: no weight class caps compute, and the timing admission
+                // does judge is the probe below, at probe_dims rather than at these boards.
                 println!(
                     "    slowest graph    {:.2} ms of inference  (measured here, not a threshold: \
-                     no class caps compute)",
+                     the probe below is admission's timing gate)",
                     infer_us_max as f64 / 1000.0
                 );
             }
@@ -153,6 +167,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 }
             }
         }
+        println!();
+        report_probe(&probe, deadline);
         println!();
         println!(
             "This is not admission. It has no download allowlist and does not decide a size class,"
@@ -184,6 +200,45 @@ fn head_reads(inf: &crate::model::Inference, obs: &Value) -> Result<(), String> 
         return Err(format!("the head decoded {} actions for {} ants", acts.len(), mine.len()));
     }
     Ok(())
+}
+
+/// Admission's probe as `check` measured it, against the game's turn.
+fn report_probe(
+    probe: &Result<(f64, std::collections::BTreeMap<String, usize>), String>,
+    deadline: u64,
+) {
+    match probe {
+        Ok((ms, dims)) => {
+            let at = if dims.is_empty() {
+                "its declared shapes".to_string()
+            } else {
+                dims.iter().map(|(n, v)| format!("{n} = {v}")).collect::<Vec<_>>().join(", ")
+            };
+            println!(
+                "probe  ({} zero-filled inferences at {at}, as admission runs them, turn {deadline} ms)",
+                crate::model::PROBE_RUNS
+            );
+            if *ms <= deadline as f64 {
+                println!("    PASSED");
+                println!(
+                    "    median           {ms:.2} ms  (measured here; the admitting runner measures again)"
+                );
+            } else {
+                println!("    FAILED  the median took {ms:.2} ms, over the {deadline} ms turn");
+                println!(
+                    "    admission refuses a model this slow on every attempt as PROBE_TOO_SLOW: make \
+                     it faster at its probe_dims"
+                );
+            }
+        }
+        Err(e) => {
+            println!("probe");
+            println!("    FAILED  {e}");
+            println!(
+                "    admission refuses this as PROBE_FAILED: the graph does not run at its probe_dims"
+            );
+        }
+    }
 }
 
 fn report_graph(stats: &crate::onnx::Stats, model: &Model, size_metric: usize) {

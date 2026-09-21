@@ -54,6 +54,10 @@ const ORION_OPERATORS: [&str; 10] = [
     "join",
 ];
 
+/// How many inferences admission's probe runs, and its verdict is their median: orion-server's
+/// `model/admission.rs`, `PROBE_RUNS`.
+pub const PROBE_RUNS: usize = 5;
+
 /// The keys orion-server 1.9.0 refuses in any adapter at upload, with its reasons
 /// (`model/manifest.rs`, `FORBIDDEN_OPERATORS`). Checked before [`ORION_OPERATORS`], so `random`
 /// is refused for the reason a node gives.
@@ -287,6 +291,8 @@ pub struct Model {
     /// What [`screen`] found that a node accepts but most likely does not mean: each a sentence
     /// naming the input and the key. Printed by the caller, to stderr.
     pub warnings: Vec<String>,
+    /// The manifest's `probe_dims`: what admission's probe binds each named dimension to.
+    probe_dims: BTreeMap<String, usize>,
     engine: std::sync::Arc<Engine>,
     adapters: Vec<Logic>,
     plan: std::sync::Arc<TypedSimplePlan>,
@@ -313,6 +319,18 @@ impl Model {
         let name = manifest["name"].as_str().unwrap_or("model").to_string();
         let inputs = decls(&manifest["inputs"], "inputs")?;
         let outputs = decls(&manifest["outputs"], "outputs")?;
+        let probe_dims = match &manifest["probe_dims"] {
+            Value::Null => BTreeMap::new(),
+            Value::Object(m) => m
+                .iter()
+                .map(|(name, v)| {
+                    v.as_u64().filter(|n| *n > 0).map(|n| (name.clone(), n as usize)).ok_or_else(
+                        || format!("probe_dims.{name} must be a positive integer, got {v}"),
+                    )
+                })
+                .collect::<Result<_, _>>()?,
+            other => return Err(format!("manifest.probe_dims must be an object, got {other}")),
+        };
 
         // The adapters, compiled on one engine — the same engine every evaluation runs on, because
         // a compiled program belongs to the engine that compiled it — after the screen.
@@ -379,6 +397,7 @@ impl Model {
             inputs,
             outputs,
             warnings,
+            probe_dims,
             engine,
             adapters,
             plan,
@@ -461,6 +480,46 @@ impl Model {
                 r
             })
             .map_err(|e| format!("the graph failed to run: {e}"))
+    }
+
+    /// Admission's probe, run the way a node runs it (orion-server's `model/admission.rs`,
+    /// `probe_runs`): [`PROBE_RUNS`] inferences over zero-filled inputs, a named dimension at the
+    /// manifest's `probe_dims` or 1 when it names none, each run timed alone and no warm-up, since a
+    /// node takes none. The median in milliseconds, and what each name was bound to.
+    pub fn probe(&self) -> Result<(f64, BTreeMap<String, usize>), String> {
+        let mut bound = BTreeMap::new();
+        let mut tensors: Vec<TValue> = vec![TValue::from(Tensor::default()); self.in_order.len()];
+        for (i, decl) in self.inputs.iter().enumerate() {
+            let dt = datum_type(&decl.dtype).ok_or_else(|| {
+                format!("input '{}': dtype '{}' is not one tract takes", decl.name, decl.dtype)
+            })?;
+            let shape: Vec<usize> = decl
+                .shape
+                .iter()
+                .map(|d| match d {
+                    Dim::Fixed(n) => *n,
+                    Dim::Named(name) => {
+                        let n = self.probe_dims.get(name).copied().unwrap_or(1);
+                        bound.insert(name.clone(), n);
+                        n
+                    }
+                })
+                .collect();
+            let zeros =
+                Tensor::zero_dt(dt, &shape).map_err(|e| format!("input '{}': {e}", decl.name))?;
+            tensors[self.in_order[i]] = zeros.into();
+        }
+        let inputs = tensors.into_iter().collect::<TVec<_>>();
+        let mut times = Vec::with_capacity(PROBE_RUNS);
+        for _ in 0..PROBE_RUNS {
+            let started = std::time::Instant::now();
+            self.plan
+                .run(inputs.clone())
+                .map_err(|e| format!("the probe inference failed: {e}"))?;
+            times.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        times.sort_by(f64::total_cmp);
+        Ok((times[PROBE_RUNS / 2], bound))
     }
 
     /// The inputs a manifest declares, for `tinybrains adapt`.
@@ -564,8 +623,10 @@ pub fn decode(
 /// The same fact `tract_libcli::tensor::parse_spec` built from `"<dim>,...,<dtype>"`, whose dtype
 /// table this copies -- without the crate, which is most of tract's command line. A dtype outside
 /// the table is refused by name, where the spec parser would have read it as one more dimension.
-fn input_fact(symbols: &SymbolScope, decl: &Decl) -> Result<InferenceFact, String> {
-    let dt = match decl.dtype.to_ascii_lowercase().as_str() {
+/// A manifest's dtype name as tract's type: the one table the graph's inputs, the probe's zeros and
+/// an adapter's tensors are all converted through.
+fn datum_type(name: &str) -> Option<DatumType> {
+    Some(match name.to_ascii_lowercase().as_str() {
         "bool" => DatumType::Bool,
         "f16" => DatumType::F16,
         "f32" => DatumType::F32,
@@ -578,10 +639,14 @@ fn input_fact(symbols: &SymbolScope, decl: &Decl) -> Result<InferenceFact, Strin
         "u16" => DatumType::U16,
         "u32" => DatumType::U32,
         "u64" => DatumType::U64,
-        other => {
-            return Err(format!("input '{}': dtype '{other}' is not one tract takes", decl.name));
-        }
-    };
+        _ => return None,
+    })
+}
+
+fn input_fact(symbols: &SymbolScope, decl: &Decl) -> Result<InferenceFact, String> {
+    let dt = datum_type(&decl.dtype).ok_or_else(|| {
+        format!("input '{}': dtype '{}' is not one tract takes", decl.name, decl.dtype)
+    })?;
     let shape = decl
         .shape
         .iter()
@@ -601,20 +666,10 @@ fn as_tensor<'a>(v: &'a DataValue<'a>) -> Option<&'a datalogic_rs::datavalue::Da
 fn to_tract(t: &datalogic_rs::datavalue::DataTensor<'_>) -> Result<Tensor, String> {
     let shape = t.shape();
     let bytes = t.data();
-    let dt = match t.dtype().name() {
-        "f32" => DatumType::F32,
-        "f64" => DatumType::F64,
-        "i8" => DatumType::I8,
-        "u8" => DatumType::U8,
-        "i16" => DatumType::I16,
-        "u16" => DatumType::U16,
-        "i32" => DatumType::I32,
-        "u32" => DatumType::U32,
-        "i64" => DatumType::I64,
-        "u64" => DatumType::U64,
-        "bool" => DatumType::Bool,
-        other => return Err(format!("dtype '{other}' is not one a graph takes here")),
-    };
+    let name = t.dtype().name();
+    let dt = datum_type(name)
+        .filter(|dt| *dt != DatumType::F16)
+        .ok_or_else(|| format!("dtype '{name}' is not one a graph takes here"))?;
     unsafe { Tensor::from_raw_dt(dt, shape, bytes) }.map_err(|e| format!("tensor: {e}"))
 }
 
