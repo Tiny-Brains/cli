@@ -11,7 +11,7 @@
 
 [package]
 name = "tinybrains"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 publish = false
 description = "Play, check and watch TinyBrains matches on a laptop"
@@ -25,8 +25,9 @@ path = "src/main.rs"
 # EVERY DEPENDENCY IS HERE FOR A CALL THE BINARY MAKES, WITH ONLY THE FEATURES THAT CALL NEEDS.
 # Compile time is wasmtime + cranelift and tract, which are the product; everything else is kept to
 # the minimum so it adds little to them. Before adding a crate, check `cargo tree -i` for one
-# already in the tree, and whether a crate here re-exports it (datalogic re-exports `bumpalo` and
-# `datavalue`). Never take a command-line or tooling crate for one helper.
+# already in the tree, and whether a crate here re-exports it (dataflow-rs re-exports `datalogic_rs`
+# and `datavalue`, and datalogic re-exports `bumpalo`). Never take a command-line or tooling crate for
+# one helper.
 [dependencies]
 # Matching what orion-server runs, so the component is executed here by the same runtime that
 # executes it in production. `runtime` + `cranelift` to compile and call it, `component-model` for
