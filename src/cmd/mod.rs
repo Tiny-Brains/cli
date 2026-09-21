@@ -60,6 +60,9 @@ impl Models {
         let t = crate::timing::start();
         let model = std::rc::Rc::new(crate::model::Model::load(&manifest, &onnx)?);
         crate::timing::stop(crate::timing::P::ModelLoad, t);
+        for w in &model.warnings {
+            eprintln!("warning: {} ({manifest_hash}): {w}", model.name);
+        }
         self.loaded.borrow_mut().insert(key, model.clone());
         Ok(model)
     }

@@ -59,6 +59,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // The graph is loaded too, though nothing is run through it: a manifest whose declared shapes
     // the graph refuses is wrong in a way the tensors alone would not show.
     let model = crate::model::Model::load(&manifest, &onnx)?;
+    for w in &model.warnings {
+        eprintln!("warning: {w}");
+    }
 
     let game = open_game(slug.as_deref())?;
     let (observations, source) = match &obs_file {

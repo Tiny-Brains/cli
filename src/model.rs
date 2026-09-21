@@ -2,7 +2,17 @@
 //!
 //! It is the same two libraries a node uses and in the same order — **datalogic** evaluates the manifest's adapters, **tract**
 //! runs the ONNX graph — so `tinybrains check` answers the question admission will answer, rather
-//! than a local approximation of it.
+//! than a local approximation of it. The evaluator is not merely the same library: it is built the
+//! way a node builds it, a dataflow-rs engine whose datalogic engine is borrowed (see
+//! [`evaluator`]), so templating, the `$` key escape and the operator families are dataflow-rs's
+//! own settings rather than a copy of them.
+//!
+//! ONE GAP IS LEFT, AND IT REFUSES RATHER THAN DIVERGES. A node also registers Orion's own
+//! operators ([`ORION_OPERATORS`]) and screens three keys out of every adapter
+//! ([`FORBIDDEN_OPERATORS`]). Neither lives anywhere this binary can link yet, and in templating
+//! mode an operator this engine lacks is not an error but data -- so an adapter calling `join`
+//! would build one tensor here and another on the ladder. [`screen`] refuses those keys instead,
+//! until the operators and the screen are shared with Orion rather than listed here.
 //!
 //! What this deliberately is NOT: a second dialect, a second budget accountant, or a second
 //! definition of what a manifest may contain. The manifest is Orion's `orion:model@1.0.0`, the
@@ -15,9 +25,9 @@
 //! and so cannot reach the observation the gather needs. Kalam does it in JSONLogic and this does
 //! it in Rust; `tinybrains conform` is what keeps the two honest.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use datalogic_rs::{DataValue, Engine, Logic};
+use dataflow_rs::datalogic_rs::{self, DataValue, Engine, Logic};
 use serde_json::{Value, json};
 use tract_onnx::prelude::*;
 
@@ -25,6 +35,107 @@ use tract_onnx::prelude::*;
 /// produces. An adapter is priced by datalogic on a node too, so a skew here is a skew in what a
 /// local `check` promises.
 pub const DATALOGIC_VERSION: &str = "5.5";
+
+/// Orion's own operators, as orion-server 1.9.0 registers them on every engine a node evaluates an
+/// adapter on (`engine/operators.rs`, `all()`). This build does not have them, and templating mode
+/// reads an unknown operator as data, so an adapter naming one is refused rather than evaluated
+/// differently. INTERIM: the list goes when the operators are shared with Orion, and until then it
+/// changes with an Orion upgrade, like `Cargo.toml`'s `dataflow-rs`.
+const ORION_OPERATORS: [&str; 10] = [
+    "base64_encode",
+    "base64_decode",
+    "base64url_encode",
+    "base64url_decode",
+    "hex_encode",
+    "hex_decode",
+    "random",
+    "url_encode",
+    "url_decode",
+    "join",
+];
+
+/// The keys orion-server 1.9.0 refuses in any adapter at upload, with its reasons
+/// (`model/manifest.rs`, `FORBIDDEN_OPERATORS`). Checked before [`ORION_OPERATORS`], so `random`
+/// is refused for the reason a node gives.
+const FORBIDDEN_OPERATORS: [(&str, &str); 3] = [
+    (
+        "secret",
+        "an adapter may not read the secret store: a manifest is authored by the model's \
+         owner, and the secrets are the deployment's",
+    ),
+    (
+        "now",
+        "an adapter may not read the clock: a replay of a traced inference must reproduce the \
+         same tensors",
+    ),
+    (
+        "random",
+        "an adapter may not draw randomness: a replay of a traced inference must reproduce the \
+         same tensors",
+    ),
+];
+
+/// The evaluator a node evaluates an adapter on, built the way the node builds it: a dataflow-rs
+/// engine with no workflows, and the datalogic engine it holds. orion-server does the same
+/// (`model/handler.rs` evaluates on `generation.engine.datalogic()`), so templating, the `$` key
+/// escape, the operator families and the `secret` operator are the node's by construction for as
+/// long as `Cargo.toml` pins the dataflow-rs orion-server links. Orion's own operators are what
+/// this lacks; [`screen`] covers them.
+fn evaluator() -> Result<(std::sync::Arc<Engine>, BTreeSet<String>), String> {
+    let engine = dataflow_rs::Engine::builder()
+        .build()
+        .map_err(|e| format!("the adapter evaluator did not build: {e}"))?;
+    let vocabulary = engine.operator_names().map(String::from).collect();
+    Ok((std::sync::Arc::clone(engine.datalogic()), vocabulary))
+}
+
+/// Walk an adapter the way a node's screen does, structurally: every single-key object, wherever
+/// it sits. `Err` for a key a node refuses or evaluates with an operator this build lacks; a
+/// warning for a key that is no operator at all, which a node reads as data -- a misspelt
+/// `{"scattr": …}` is a literal object, and `{"if": [{"=": …}, …]}` takes the THEN branch, because
+/// an object is truthy. Nothing refuses that on the ladder, so the warning is the only place a
+/// competitor hears of it. A `$`-escaped key is data by intent and never warned about.
+fn screen(
+    logic: &Value,
+    path: &str,
+    vocabulary: &BTreeSet<String>,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
+    match logic {
+        Value::Object(map) => {
+            if map.len() == 1 {
+                let key = map.keys().next().expect("one member");
+                if let Some((_, reason)) = FORBIDDEN_OPERATORS.iter().find(|(op, _)| op == key) {
+                    return Err(format!("{path} uses {{\"{key}\": …}}: {reason}"));
+                }
+                if ORION_OPERATORS.contains(&key.as_str()) {
+                    return Err(format!(
+                        "{path} uses {{\"{key}\": …}}, one of Orion's own operators: a node \
+                         evaluates it and this build of tinybrains cannot, so it refuses the \
+                         adapter rather than read the call as data"
+                    ));
+                }
+                if !key.starts_with('$') && !vocabulary.contains(key) {
+                    warnings.push(format!(
+                        "{path}: {{\"{key}\": …}} names no operator, so a node reads it as data \
+                         rather than calling anything. If it is a misspelt operator, fix it; if \
+                         the object is data, write {{\"${key}\": …}} to say so"
+                    ));
+                }
+            }
+            for (key, value) in map {
+                screen(value, &format!("{path}.{key}"), vocabulary, warnings)?;
+            }
+        }
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                screen(item, &format!("{path}[{i}]"), vocabulary, warnings)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 
 /// One dimension of a declared shape: a count, or a name bound per call.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,7 +284,10 @@ pub struct Model {
     pub artifact_bytes: usize,
     inputs: Vec<Decl>,
     outputs: Vec<Decl>,
-    engine: Engine,
+    /// What [`screen`] found that a node accepts but most likely does not mean: each a sentence
+    /// naming the input and the key. Printed by the caller, to stderr.
+    pub warnings: Vec<String>,
+    engine: std::sync::Arc<Engine>,
     adapters: Vec<Logic>,
     plan: std::sync::Arc<TypedSimplePlan>,
     /// The graph index each manifest input feeds, in manifest order.
@@ -201,9 +315,10 @@ impl Model {
         let outputs = decls(&manifest["outputs"], "outputs")?;
 
         // The adapters, compiled on one engine — the same engine every evaluation runs on, because
-        // a compiled program belongs to the engine that compiled it.
-        let engine = Engine::new();
+        // a compiled program belongs to the engine that compiled it — after the screen.
+        let (engine, vocabulary) = evaluator()?;
         let mut adapters = Vec::with_capacity(inputs.len());
+        let mut warnings = Vec::new();
         for (i, decl) in inputs.iter().enumerate() {
             let logic = manifest["inputs"][i]["adapter"].clone();
             let logic = if logic.is_null() {
@@ -212,6 +327,7 @@ impl Model {
             } else {
                 logic
             };
+            screen(&logic, &format!("input '{}': adapter", decl.name), &vocabulary, &mut warnings)?;
             adapters.push(engine.compile(&logic).map_err(|e| {
                 format!("input '{}': the adapter does not compile: {e}", decl.name)
             })?);
@@ -262,6 +378,7 @@ impl Model {
             artifact_bytes: onnx.len(),
             inputs,
             outputs,
+            warnings,
             engine,
             adapters,
             plan,

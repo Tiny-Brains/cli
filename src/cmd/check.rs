@@ -52,6 +52,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let stats = crate::onnx::stats(&wb)?;
     let model = Model::load(&manifest, &wb)?;
+    for w in &model.warnings {
+        eprintln!("warning: {w}");
+    }
     if !json_out {
         report_graph(&stats, &model, size_metric);
         println!();

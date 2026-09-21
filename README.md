@@ -2,8 +2,9 @@
 
 `tinybrains` plays a TinyBrains match on your own machine, with no server, no database and no
 season. It hosts a game's cartridge through wasmtime and runs a model's adapters through
-**datalogic** and its graph through **tract**, which are the libraries an Orion node links. So
-`check` and a local match report what the ladder will, and every replay uses the ladder's format.
+**datalogic**, on an engine built through **dataflow-rs** the way an Orion node builds it, and its
+graph through **tract**. So `check` and a local match report what the ladder will, and every replay
+uses the ladder's format.
 
 ## Install
 
@@ -323,11 +324,21 @@ Formula/               the tap, written by the release workflow
   (`.zip` on Windows), with no version in the name and the binary at the top. The formula,
   `releases/latest/download/` links, ants-starter's CI, `web/docs/Dockerfile` and the book's
   install lines all depend on these names.
-- **`datalogic-rs` tracks what orion-server links.** A node and this binary both price an adapter
-  with datalogic, so a version skew means a local pass and a remote refusal. `DATALOGIC_VERSION` in
-  `src/model.rs` is what `games` prints; bump it together with the dependency, and only with Orion.
+- **`dataflow-rs` tracks what orion-server links.** A node evaluates an adapter on the datalogic
+  engine its dataflow-rs engine holds, and this binary borrows its evaluator the same way, so the
+  templating mode, the `$` key escape and the operator families are dataflow-rs's settings on both
+  sides. A version or feature skew means a local pass and a remote refusal, or two different
+  tensors. `Cargo.toml` carries orion-server's exact line, and `DATALOGIC_VERSION` in
+  `src/model.rs` is what `games` prints; bump them together, and only with Orion.
 
 ## Known gaps
+
+- **Orion's own operators are refused, not run.** A node registers ten operators of Orion's (the
+  `base64`, `base64url`, `hex` and `url` codecs, `join` and `random`) and screens `secret`, `now` and
+  `random` out of every adapter. They live in orion-server, which this binary does not link, so
+  `src/model.rs` lists them and refuses an adapter that names one: in templating mode a missing
+  operator reads as data, which would be a different tensor rather than an error. The lists change
+  with an Orion upgrade until Orion shares the operators and the screen.
 
 - **The seats of a turn are inferred one after another.** `Model` is `Send + Sync`, so a worker per
   seat only needs the run's model cache (`Models`, which uses `Rc`/`RefCell`) made thread-safe.

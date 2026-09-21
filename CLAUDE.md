@@ -71,12 +71,21 @@ to look for new duplicates.
   - `Instantiate`..`DecodeOut` double-count on purpose.
   - `infer_us` measures `plan.run` alone.
 - **`DATALOGIC_VERSION` in `src/model.rs` tracks what orion-server links.** It is the string that
-  `games` and `env`'s hello print. `Cargo.toml`'s `datalogic-rs` is what actually runs. Bump them
-  together, and only with Orion.
+  `games` and `env`'s hello print. `Cargo.toml`'s `dataflow-rs`, orion-server's exact line, is what
+  actually runs datalogic. Bump them together, and only with Orion.
+- **The evaluator is borrowed, never built.** `model::evaluator` builds a dataflow-rs engine and
+  takes its `datalogic()`, as orion-server's model handler does. Never construct a
+  `datalogic_rs::Engine` directly: templating, the `$` key escape and the operator families are
+  dataflow-rs's settings, and a second construction is a second dialect.
+  - `ORION_OPERATORS` and `FORBIDDEN_OPERATORS` in `src/model.rs` are copies of orion-server's lists.
+    Change them with an Orion upgrade, and delete them once Orion shares its operators and screen.
+  - An operator this binary lacks must be refused, never left to templating: an unknown key reads
+    as data, so a missing operator is a different tensor, not an error.
 - **Dependencies are the minimum, with features gated** (`default-features = false`). Before adding
   a crate:
   - look for it in `cargo tree -i`
-  - look for a re-export (datalogic re-exports `bumpalo` and `datavalue`)
+  - look for a re-export (dataflow-rs re-exports `datalogic_rs` and `datavalue`, and datalogic
+    re-exports `bumpalo`)
   - never take a command-line or tooling crate for one helper
 - **Other repos consume this binary.**
   - `registry.rs`, `serve.rs` and `cmd/` read the cartridge's artifact-set layout: the component at
