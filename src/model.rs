@@ -34,9 +34,9 @@ use tract_onnx::prelude::*;
 /// The evaluator this binary links, printed by `tinybrains games` and written into every replay it
 /// produces. An adapter is priced by datalogic on a node too, so a skew here is a skew in what a
 /// local `check` promises.
-pub const DATALOGIC_VERSION: &str = "5.5";
+pub const DATALOGIC_VERSION: &str = "5.6";
 
-/// Orion's own operators, as orion-server 1.9.0 registers them on every engine a node evaluates an
+/// Orion's own operators, as orion-server 1.9.1 registers them on every engine a node evaluates an
 /// adapter on (`engine/operators.rs`, `all()`). This build does not have them, and templating mode
 /// reads an unknown operator as data, so an adapter naming one is refused rather than evaluated
 /// differently. INTERIM: the list goes when the operators are shared with Orion, and until then it
@@ -58,7 +58,7 @@ const ORION_OPERATORS: [&str; 10] = [
 /// `model/admission.rs`, `PROBE_RUNS`.
 pub const PROBE_RUNS: usize = 5;
 
-/// The keys orion-server 1.9.0 refuses in any adapter at upload, with its reasons
+/// The keys orion-server 1.9.1 refuses in any adapter at upload, with its reasons
 /// (`model/manifest.rs`, `FORBIDDEN_OPERATORS`). Checked before [`ORION_OPERATORS`], so `random`
 /// is refused for the reason a node gives.
 const FORBIDDEN_OPERATORS: [(&str, &str); 3] = [
@@ -408,8 +408,14 @@ impl Model {
 
     /// One inference over one observation: every input adapter evaluated under `budget`, the graph
     /// run, the outputs checked against the manifest through the call's own bindings.
-    pub fn infer(&self, observation: &Value, budget: u64) -> Result<Inference, String> {
+    pub fn infer(
+        &self,
+        observation: &Value,
+        memory: &crate::memory::Carry,
+        budget: u64,
+    ) -> Result<Inference, String> {
         let arena = datalogic_rs::bumpalo::Bump::new();
+        let input = memory.input(observation, &arena)?;
         let mut bindings = Bindings::default();
         let mut tensors: Vec<TValue> = vec![TValue::from(Tensor::default()); self.in_order.len()];
         let mut ops = 0u64;
@@ -419,7 +425,7 @@ impl Model {
             let t = crate::timing::start();
             let metered = self
                 .engine
-                .evaluate_metered(&self.adapters[i], observation, &arena, budget)
+                .evaluate_metered(&self.adapters[i], input, &arena, budget)
                 .map_err(|e| format!("adapter for input '{}' failed: {e}", decl.name))?;
             crate::timing::stop(crate::timing::P::Adapter, t);
             ops += metered.ops;
@@ -527,14 +533,30 @@ impl Model {
         self.inputs.iter().map(|d| d.name.as_str()).collect()
     }
 
+    /// The dtype the manifest declares for output `name`, if it declares one.
+    pub fn output_dtype(&self, name: &str) -> Option<&str> {
+        self.outputs.iter().find(|d| d.name == name).map(|d| d.dtype.as_str())
+    }
+
+    /// Whether a runner carries anything for this model: an output named `memory` or `ant_memory`.
+    pub fn declares_memory(&self) -> bool {
+        crate::memory::OUTPUTS.iter().any(|n| self.output_dtype(n).is_some())
+    }
+
     /// The tensor one adapter produces, without running the graph.
-    pub fn adapt(&self, observation: &Value, budget: u64) -> Result<Vec<AdaptedInput>, String> {
+    pub fn adapt(
+        &self,
+        observation: &Value,
+        memory: &crate::memory::Carry,
+        budget: u64,
+    ) -> Result<Vec<AdaptedInput>, String> {
         let arena = datalogic_rs::bumpalo::Bump::new();
+        let input = memory.input(observation, &arena)?;
         let mut out = Vec::new();
         for (i, decl) in self.inputs.iter().enumerate() {
             let metered = self
                 .engine
-                .evaluate_metered(&self.adapters[i], observation, &arena, budget)
+                .evaluate_metered(&self.adapters[i], input, &arena, budget)
                 .map_err(|e| format!("adapter for input '{}' failed: {e}", decl.name))?;
             let t = as_tensor(metered.value)
                 .ok_or_else(|| format!("adapter for input '{}' produced no tensor", decl.name))?;
@@ -616,6 +638,18 @@ pub fn decode(
 }
 
 // ---------------------------------------------------------------------------- plumbing
+
+/// One expression evaluated on the node's evaluator over a seat's input, as JSON.
+#[cfg(test)]
+pub fn eval(logic: &Value, view: &Value, carry: &crate::memory::Carry) -> Result<Value, String> {
+    let (engine, _) = evaluator()?;
+    let compiled = engine.compile(logic).map_err(|e| e.to_string())?;
+    let arena = datalogic_rs::bumpalo::Bump::new();
+    let input = carry.input(view, &arena)?;
+    let metered =
+        engine.evaluate_metered(&compiled, input, &arena, u64::MAX).map_err(|e| e.to_string())?;
+    Ok(metered.value.to_serde_value())
+}
 
 /// A declared input as the fact tract type-checks the graph against: its dtype, and its shape with
 /// each named dimension a symbol of the model's own scope.

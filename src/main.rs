@@ -2,6 +2,7 @@ mod cartridge;
 mod cmd;
 mod env;
 mod matchfile;
+mod memory;
 mod model;
 mod onnx;
 mod registry;
@@ -31,6 +32,8 @@ Options
   --game SLUG    which game (default: the file's `game`, else ants)
   -v, --verbose  print every strike and forfeit as it happens
   --timings      where the wall clock went, phase by phase
+  --memory-flat-bytes N, --memory-cell-bytes N
+                 check: judge a model's memory against a weight class's two numbers
 ";
 
 fn main() {

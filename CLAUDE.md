@@ -19,6 +19,7 @@ outside itself. `README.md` covers commands, the registry, environment variables
 cargo fmt --check                                      # rustfmt.toml: max_width 100
 cargo clippy --locked --release -- -D warnings         # CI gates on this
 cargo build --release                                  # rust-toolchain.toml pins rustc exactly
+cargo test --release                                   # memory carry and pricing, maps name rule
 
 # then run it where a registry is: the starter kit carries one
 cd ../ants-starter
@@ -28,9 +29,9 @@ cd ../ants-starter
 ../cli/target/release/tinybrains conform replays/self-play.json
 ```
 
-There are no unit tests. For `src/wave.rs` the check that matters is `tinybrains conform` on a
-replay the ladder wrote. After a dependency change, run `cargo tree -e normal,build --target all -d`
-to look for new duplicates.
+The unit tests cover what can be checked without a cartridge. For `src/wave.rs` the check that
+matters is `tinybrains conform` on a replay the ladder wrote. After a dependency change, run
+`cargo tree -e normal,build --target all -d` to look for new duplicates.
 
 ## Rules
 
@@ -48,10 +49,24 @@ to look for new duplicates.
 - **Every `<game>-starter` pins a release and must work with no sibling checkout.** A registry
   feature that only works from a `path` entry is one competitors cannot use.
 - **`src/wave.rs` is the one allowed second implementation** of Kalam's wave loop, and its module
-  doc names the behaviours it copies. Kalam's wave rules (`kalam/scripts/gen-kalam.py`) and
-  `wave.rs` change together. `conform` diffs every field and every turn. A difference in `deltas` is
-  the one that matters, because ranks and scores can agree while the matches that produced them
-  differed.
+  doc names the behaviours it copies. Kalam's wave rules (`kalam/workflows/kalam-match-run.json`)
+  and `wave.rs` change together. The memory carry is one of them: `memory::Carry` stores a call's
+  `memory` and `ant_memory` when the call answered, before the head is read, as Kalam's `acts` task
+  does. `conform` diffs every field and every turn. A difference in `deltas` is the one that
+  matters, because ranks and scores can agree while the matches that produced them differed.
+- **`src/memory.rs` copies Soma's rules, not Orion's.** The verdict codes, the dtype widths, the
+  named-dimension limits and `FLAT_BYTES_MAX`/`CELL_BYTES_MAX` are the admit clock's and
+  `weight_classes_ok()`'s. The name rule in `cmd/maps.rs` is `season_map_name_problem()`, and its
+  codes are Soma's 422. A change in `soma/migrations/0001_init.sql` is a change here too.
+  - The carried value is a live tensor, as on a node: `Carry::input` builds the view into the
+    evaluator's arena and puts each memory in as a `DataValue::Tensor`, and `Model::infer` and
+    `adapt` evaluate on that tree. Never put the memory into the serde view as JSON. The wire form
+    decodes to the same tensor, but `{"var": "memory.tensor.dtype"}` resolves on it and not on a
+    node's, so an adapter that looks inside plays differently here. JSON memory comes only from an
+    `adapt --obs` file, and `Carry::load` decodes it on the way in.
+- **`view`'s page imports `viz.js` as a namespace.** A named import the bundle lacks fails the whole
+  module, and an older viewer has no `mountGraph`, so the page tests for it and plays the replay
+  alone without it.
 - **`src/env.rs` is not a third match loop.** It has no deadline, strikes, forfeits, model call or
   replay envelope.
   - Its positional actions are correct only because it never forfeits a seat. If it ever needs

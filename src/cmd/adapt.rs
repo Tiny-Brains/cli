@@ -12,6 +12,12 @@
 //!
 //! It knows no game. The adapters are the manifest's, the observations are the cartridge's — and
 //! they are evaluated by datalogic, which is the evaluator a node runs them on.
+//!
+//! An observation from `--obs` may carry a seat's `memory` or `ant_memory`, as a runner hands it
+//! back, so a trainer can compare tensors with a memory set. Either spelling works: the tensor wire
+//! form, or nested JSON arrays, which are decoded into the dtype the manifest declares for the
+//! output of that name. Both are decoded on load, and the adapter is handed a live tensor, as a
+//! node hands it.
 
 use std::path::PathBuf;
 
@@ -83,8 +89,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let mut cases = Vec::new();
+    let declared = |name: &str| model.output_dtype(name).map(String::from);
     for (i, obs) in observations.iter().enumerate() {
-        let ports = model.adapt(obs, budget).map_err(|e| format!("observation {i}: {e}"))?;
+        let (view, memory) = crate::memory::Carry::load(obs, &declared)
+            .map_err(|e| format!("observation {i}: {e}"))?;
+        let ports =
+            model.adapt(&view, &memory, budget).map_err(|e| format!("observation {i}: {e}"))?;
         let ops = ports.iter().map(|(.., ops)| *ops).max().unwrap_or(0);
 
         let dir = out.join(format!("case-{i}"));

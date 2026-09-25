@@ -39,16 +39,16 @@ wasmtime = { version = "48", default-features = false, features = ["runtime", "c
 # dataflow-rs, never pinned beside it: orion-server evaluates an adapter on the datalogic engine
 # its dataflow-rs engine holds (`generation.engine.datalogic()`), and so does `model.rs`. So the
 # templating mode, the `$` key escape and every operator family are dataflow-rs's own settings,
-# not a copy of them here. This line is orion-server 1.9.0's, features and exact version: bump it
+# not a copy of them here. This line is orion-server 1.9.1's, features and exact version: bump it
 # only with Orion, or `check` evaluates and prices an adapter the ladder would not. `all-operators`
 # is what costs the most (`datetime` brings chrono-tz); dropping it is `==` meaning something else
 # on a date-shaped string, and `try` or `now` read as data where the node calls them.
-dataflow-rs = { version = "=3.13.0", default-features = false, features = [
+dataflow-rs = { version = "=3.14.0", default-features = false, features = [
     "all-operators", "tensor", "budget",
 ] }
 # tract is what runs the graph there. Only `tract-onnx`: the one helper once taken from
 # `tract-libcli` (a shape spec parser) pulled in clap, tflite, npy, the GPU and Metal backends.
-tract-onnx = { version = "0.23.7", default-features = false }
+tract-onnx = { version = "0.23.8", default-features = false }
 # The trait that decodes `tract_onnx::pb`; the same prost tract-onnx builds.
 prost = { version = "0.14", default-features = false, features = ["std"] }
 

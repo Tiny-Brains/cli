@@ -83,11 +83,11 @@ The wave loop is a Rust copy of the ladder's, and `tinybrains conform` checks th
 | `tinybrains games` | Prints the registry in use, the datalogic version, and each game's engine digest, source and boards. |
 | `tinybrains maps [GAME]` | Lists the boards the release ships, and the limits a season's board must fit. |
 | `tinybrains maps export [GAME] [DIR]` | Writes those boards out as files, checked against the release's catalogue. The default DIR is `./maps`; to give a DIR you must give GAME first. |
-| `tinybrains maps check <board.json>...` | Checks boards the way a season's upload will: the header, the game's `limits.boards`, then the engine's own `worldgen`. |
-| `tinybrains check <model.onnx> <manifest.json>` | Does admission's checks: the graph's opset, parameters, nodes and operators, and the size metric (artifact bytes + manifest bytes). It then runs every adapter over the game's reference observations under the adapter budget, runs the graph, and reads the head. Last it runs admission's probe as a node does: five inferences over zero-filled inputs at the manifest's `probe_dims`, whose median must fit the game's `turn_ms`, the admitting runner's `models.max_probe_ms`. It exits non-zero on a failure. |
-| `tinybrains adapt <model.onnx> <manifest.json>` | Writes each tensor the manifest's adapters build as a numpy `.npy` file, next to the observation that produced it. Use this to diff your trainer's encoder against the ladder's. |
+| `tinybrains maps check <board.json>...` | Checks boards the way a season's upload will: the header, the name, the game's `limits.boards`, then the engine's own `worldgen`. A season board is named `size-terrain-Np-Hh`, where `N` is the file's `players` and its `hills` array holds N × H entries. A name that breaks the rule is refused with Soma's own code: `map_name_pattern`, `map_name_players` or `map_name_hills`. For a `basic-*` board it is only a warning, because those ship in the release and are never uploaded. |
+| `tinybrains check <model.onnx> <manifest.json>` | Does admission's checks: the graph's opset, parameters, nodes and operators, and the size metric (artifact bytes + manifest bytes). It then runs every adapter over the game's reference observations under the adapter budget, runs the graph, and reads the head. Last it runs admission's probe as a node does: five inferences over zero-filled inputs at the manifest's `probe_dims`, whose median must fit the game's `turn_ms`, the admitting runner's `models.max_probe_ms`. A model with memory is priced and played in a chain (see [Memory](#memory)). It exits non-zero on a failure. |
+| `tinybrains adapt <model.onnx> <manifest.json>` | Writes each tensor the manifest's adapters build as a numpy `.npy` file, next to the observation that produced it. Use this to diff your trainer's encoder against the ladder's. An observation given with `--obs` may carry `memory` or `ant_memory`, in the tensor wire form (`{"tensor": {"dtype", "shape", "data"}}`) or as nested arrays. Nested arrays are decoded into the dtype the manifest declares for the output of that name. Either way the adapter gets a live tensor, as on a node. |
 | `tinybrains conform <replay.json>` | Rebuilds a recorded match from its envelope, plays it here, and diffs every field and every turn of the action stream. It exits non-zero on a difference. It refuses a replay played on another engine digest. |
-| `tinybrains view <replay.json>` | Serves the game's viewer and the replay on `127.0.0.1`, and opens a browser. |
+| `tinybrains view <replay.json>` | Serves the game's viewer and the replay on `127.0.0.1`, and opens a browser. The replay is mounted on the viewer's Stage tier, with the viewer's graph under it when the viewer ships `mountGraph`. An older viewer plays the replay without the graph. |
 | `tinybrains env` | Runs the cartridge as a training environment over JSON Lines (see [`env`](#env-the-training-environment)). |
 | `tinybrains --version`, `--help` | |
 
@@ -98,6 +98,7 @@ The wave loop is a Rust copy of the ladder's, and `tinybrains conform` checks th
 | `-v`, `--verbose` | match | Prints every strike and forfeit as it happens, and every seat-turn that ran over the turn deadline. |
 | `--timings` | match | Shows where the wall clock went, phase by phase (see below). |
 | `--json` | `check` | Prints the whole report as one JSON object, for scripts. |
+| `--memory-flat-bytes N`, `--memory-cell-bytes N` | `check` | The weight class's two memory numbers (0 to 262144, and 0 to 16). With either one, the model's memory is judged against that class; a number left out is 0. |
 | `--obs FILE` | `adapt` | Uses these observations instead of the reference set: one observation, an array of them, or `{"observations": [...]}`. |
 | `--no-open` | `view` | Prints the URL without opening a browser. |
 
@@ -112,6 +113,51 @@ waits for the flag.
 
 `infer_us` measures `plan.run` only, not the adapter that fed it. That is the number in a replay's
 `seats` and in `check --json`.
+
+## Memory
+
+A manifest may declare an output named `memory`, one named `ant_memory`, both or neither. The
+runner keeps each seat's last value of each, and puts it on that seat's next view under the same
+key. An adapter reads it with `{"tensor": [{"var": "memory"}]}`.
+
+| When | The seat's `memory` (and `ant_memory`) |
+|---|---|
+| Turn 0 | Absent from the view |
+| After an answered call | That call's output of the same name |
+| After a struck call (the call failed) | Unchanged: the last value the model wrote |
+| A new match | Absent again |
+
+- Each seat keeps its own memory, even two seats of one model.
+- The referee reads `policy` alone, and the replay carries no memory.
+- A call that answers with a head the platform cannot read is still a strike. Its memory is kept,
+  because the call answered. Kalam does the same.
+- The adapter gets the output tensor itself, here as on a node: the view goes into the evaluator
+  with each memory as a live tensor. `{"var": "memory"}` is that tensor, never an object, so an
+  adapter cannot tell a laptop from the ladder by looking inside it.
+
+**`check` prices a memory** the way the admit clock does, from the manifest alone. Each dtype has a
+width in bytes: 1 for `bool`, `i8` and `u8`; 2 for `f16`, `i16` and `u16`; 4 for `f32`, `i32` and
+`u32`; 8 for `f64`, `i64` and `u64`. An output whose shape names a dimension costs that much per
+cell: the product of its numeric dimensions, times the width, times the board's cells. An output
+that names no dimension is a fixed cost. `memory` may name at most two dimensions and `ant_memory`
+at most one, and no name may appear twice in one shape. `check` prints the fixed bytes, the bytes
+per cell, and the total at the smallest board (the smallest side squared) and the largest
+(`limits.boards.cells_max`).
+
+With `--memory-flat-bytes` and `--memory-cell-bytes`, the class's cap is
+`flat + cell × cells`, and it is checked at both boards. The verdicts are the admit clock's:
+
+| Code | When |
+|---|---|
+| `MEMORY_SHAPE` | A memory output names too many dimensions, names one twice, or lacks a dtype with a width or a shape |
+| `MEMORY_NOT_ALLOWED` | The manifest declares a memory output and the class allows 0 and 0 |
+| `MEMORY_TOO_LARGE` | The memory is over the cap at the smallest or the largest board |
+| `MEMORY_ROUND_TRIP` | A call that was fed the model's own memory failed |
+
+**The round trip.** For a model with memory, `check` chains the reference observations the way the
+admitting runner does. Observation i gets the memory outputs of call i-1 when observation i-1 was on
+a board of the same size and that call answered. Otherwise the keys are absent. No observation is
+played twice. `check` reports how many calls were fed a memory and how many of those failed.
 
 ## Registry and match files
 
@@ -253,8 +299,9 @@ cargo fmt --check
 cargo clippy --locked --release -- -D warnings
 ```
 
-There are no unit tests. On every push to `main` and on every pull request,
-`.github/workflows/check.yml` does two things:
+`cargo test` runs the unit tests: the memory carry, its pricing and verdicts, and the season-board
+name rule. On every push to `main` and on every pull request, `.github/workflows/check.yml` does two
+things:
 - it runs format, lint and a locked build
 - it clones [ants-starter](https://github.com/Tiny-Brains/ants-starter) and runs `games`, `check`
   and the starter's self-play match with the new binary, which also exercises the release fetch
@@ -300,6 +347,7 @@ src/cartridge.rs       the component, hosted through wasmtime; knows no game
 src/wave.rs            the wave loop: the one copy of Kalam's
 src/env.rs             the training environment: a pool of waves, no referee
 src/matchfile.rs       the match-file format's specification
+src/memory.rs          a seat's memory: the carry as live tensors, the admit clock's pricing
 src/model.rs, onnx.rs  datalogic adapters, tract graphs, the head decode, graph stats
 src/registry.rs        games.toml: a path or a pinned release
 src/store.rs           the content-addressed cache
@@ -316,8 +364,12 @@ Formula/               the tap, written by the release workflow
 - **The CLI knows no game.** It never links an engine crate or names a cartridge's types. A second
   game is a registry entry, not Rust.
 - **A local result and a ladder result are the same match.** `src/wave.rs` is the only copy of
-  Kalam's wave loop. A change to Kalam's claim, strike, forfeit or rank rules is a change here in
-  the same batch, and `conform` shows whether it was made.
+  Kalam's wave loop. A change to Kalam's claim, strike, forfeit, rank or memory rules is a change
+  here in the same batch, and `conform` shows whether it was made.
+- **The memory rules are Soma's and Kalam's.** The verdict codes, the dtype widths, the named
+  dimension limits and the bounds on the class numbers (`FLAT_BYTES_MAX`, `CELL_BYTES_MAX`) in
+  `src/memory.rs` copy the admit clock and `weight_classes_ok()`. The name rule in `maps check`
+  copies `season_map_name_problem()`. Change them together.
 - **The binary carries no path of the machine that built it.** There is no built-in registry and
   no `CARGO_MANIFEST_DIR` lookup.
 - **The archive names are an interface.** Archives are named `tinybrains-<target>.tar.gz`

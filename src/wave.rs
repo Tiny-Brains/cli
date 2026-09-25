@@ -2,8 +2,8 @@
 //!
 //! The one part of the CLI that is a **second implementation**. Kalam expresses this loop as an
 //! Orion workflow of JSONLogic; this expresses it as Rust. `tinybrains conform` is what keeps the
-//! copy honest. Five behaviours are Kalam's and not the engine's -- each drawn from
-//! `kalam/scripts/gen-kalam.py`, and each silently wrong if copied wrongly:
+//! copy honest. Six behaviours are Kalam's and not the engine's -- each drawn from
+//! `kalam-match-run`, and each silently wrong if copied wrongly:
 //!
 //! 1. `actions` uses the explicit `{m, seat, action}` form. The positional form only aligns while
 //!    every live seat is played, and a forfeited seat is not sent at all.
@@ -16,6 +16,10 @@
 //! 4. A forfeited seat's rank is `engine_rank + seat_count`, so two forfeits cannot tie with a seat
 //!    that played. The engine's own ranks go into the envelope untouched.
 //! 5. `refs` are a flat list, each carrying its own `m` and `seat`, echoed and never inspected.
+//! 6. A seat's `memory` and `ant_memory` are the runner's, not the engine's: absent on turn 0, the
+//!    call's own output of that name after an answered call, unchanged after a struck one, and
+//!    never shared between seats ([`crate::memory::Carry`]). The referee still reads `policy` alone,
+//!    and the replay carries no memory.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,6 +28,7 @@ use serde_json::{Value, json};
 use crate::cartridge::{Cartridge, Fault};
 use crate::cmd::Models;
 use crate::matchfile::{MatchFile, Row};
+use crate::memory::Carry;
 use crate::registry::Game;
 
 pub struct Outcome {
@@ -55,6 +60,9 @@ struct Ref {
     infer_us_max: u64,
     /// Turns this seat was actually played, so a mean survives a seat that forfeited early.
     seat_turns: u64,
+    /// What this seat's model wrote to its memory, handed back on its next view. Kept here and not
+    /// on the wire `ref`, as Kalam keeps it in the run's own data.
+    memory: Carry,
 }
 
 impl Ref {
@@ -138,6 +146,7 @@ pub fn run(
                 seat_turns: 0,
                 forfeited: false,
                 script: s.script.clone(),
+                memory: Carry::default(),
             })
         })
         .collect();
@@ -197,11 +206,8 @@ pub fn run(
             report.seat_turns += 1;
             let m = v["ref"]["m"].as_u64().unwrap_or(0) as usize;
             let seat = v["ref"]["seat"].as_u64().unwrap_or(0);
-            let (weights, manifest) = match find(&refs, m, seat) {
-                Some(r) => (r.weights_hash.clone(), r.manifest_hash.clone()),
-                None => continue,
-            };
-            let model = models.get(&weights, &manifest)?;
+            let Some(rf) = find(&refs, m, seat) else { continue };
+            let model = models.get(&rf.weights_hash, &rf.manifest_hash)?;
 
             // ONE SEAT, ONE INFERENCE -- the shape `kalam-match` has. The failure is the
             // competitor's and not the run's: an adapter that throws, a graph that will not run, a
@@ -209,7 +215,13 @@ pub fn run(
             // no-op, exactly as a node would score it.
             let mut ops = 0;
             let mut infer_us = 0;
-            let action = match model.infer(&v["view"], budget_ops) {
+            let answer = model.infer(&v["view"], &rf.memory, budget_ops);
+            // Rule 6, before the head is read: an answered call's memory is kept even when its head
+            // cannot be, as Kalam stores it; a failed call leaves the last one where it was.
+            if let Some(rf) = refs.iter_mut().find(|x| x.m == m && x.seat == seat) {
+                rf.memory.after(answer.as_ref().ok());
+            }
+            let action = match answer {
                 Ok(inf) => {
                     ops = inf.peak_ops;
                     infer_us = inf.infer_us;

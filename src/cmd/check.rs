@@ -5,18 +5,30 @@
 //! Necessary and not sufficient. There is no download allowlist here, the size class is *reported*
 //! rather than decided because that table is the season's, and a node re-hashes the object it
 //! fetches — so a pass here says the submission is well formed, not that it was admitted.
+//!
+//! A model that declares a memory output is priced the way the admit clock prices it, and judged
+//! against a weight class when `--memory-flat-bytes` and `--memory-cell-bytes` name one: the
+//! class table is the season's, so without them the bytes are reported and nothing is decided.
 
 use serde_json::{Value, json};
 
 use crate::cmd::{game_and_rest, open_game, reference_observations};
+use crate::memory::{self, Carry, Price, Verdict};
 use crate::model::Model;
 use crate::store;
 
+/// A weight class's two memory numbers, as `--memory-flat-bytes` and `--memory-cell-bytes` gave
+/// them. Absent means 0, as it does in a season's class table.
+struct Class {
+    flat: u64,
+    cell: u64,
+}
+
 pub fn run(args: &[String]) -> Result<(), String> {
-    // `--json` before the shared parser sees it: `game_and_rest` refuses an unknown option, which
-    // is the behaviour every other command wants.
+    // `--json` and the class numbers before the shared parser sees them: `game_and_rest` refuses an
+    // unknown option, which is the behaviour every other command wants.
     let json_out = args.iter().any(|a| a == "--json");
-    let args: Vec<String> = args.iter().filter(|a| *a != "--json").cloned().collect();
+    let (class, args) = class_of(args)?;
     let (slug, files) = game_and_rest(&args)?;
     if files.len() != 2 {
         return Err(
@@ -51,7 +63,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let deadline = game.limit("turn_ms", 1000);
 
     let stats = crate::onnx::stats(&wb)?;
-    let model = Model::load(&manifest, &wb)?;
+    // Priced from the manifest alone, as the admit clock prices it: before the graph is loaded,
+    // because a memory declaration a node would refuse is the likelier reason a load fails too.
+    let price = memory::price(&manifest);
+    let model = Model::load(&manifest, &wb).map_err(|e| match &price {
+        Err((code, why)) => format!("{code}: {why}"),
+        Ok(_) => e,
+    })?;
     for w in &model.warnings {
         eprintln!("warning: {w}");
     }
@@ -64,28 +82,53 @@ pub fn run(args: &[String]) -> Result<(), String> {
         );
     }
 
+    // Every observation is played, as the admitting runner plays them, and for a model with memory
+    // they are CHAINED: observation i is fed call i-1's memory outputs when observation i-1 was on
+    // a board of the same size and its call answered, so a memory input that cannot take its own
+    // output fails here rather than on turn 1 of every match. No observation is played twice.
+    let chained = model.declares_memory();
+    let mut round_trip = RoundTrip::default();
     let mut ops_max = 0u64;
     let mut infer_us_max = 0u64;
     let mut failure: Option<(usize, String, bool)> = None;
+    let mut last: Option<(Carry, &Value)> = None;
     for (i, obs) in observations.iter().enumerate() {
-        match model.infer(obs, budget) {
+        let fed = chained
+            && last.as_ref().is_some_and(|(c, prev)| !c.is_empty() && prev["size"] == obs["size"]);
+        let none = Carry::default();
+        let memory = match (&last, fed) {
+            (Some((carry, _)), true) => carry,
+            _ => &none,
+        };
+        let answer = model.infer(obs, memory, budget);
+        round_trip.checked += u64::from(fed);
+        last = answer.as_ref().ok().map(|inf| {
+            let mut c = Carry::default();
+            c.after(Some(inf));
+            (c, obs)
+        });
+        match answer {
             Ok(inf) => {
                 ops_max = ops_max.max(inf.peak_ops);
                 infer_us_max = infer_us_max.max(inf.infer_us);
                 // The head has to be one the platform can gather from, so `check` reads it exactly
                 // as `kalam-match` does rather than merely noting that something came back.
                 if let Err(e) = head_reads(&inf, obs) {
-                    failure = Some((i, e, false));
-                    break;
+                    failure.get_or_insert((i, e, false));
                 }
+            }
+            // A call that was fed a memory and failed is the round trip's to report.
+            Err(e) if fed => {
+                round_trip.failed += 1;
+                round_trip.first.get_or_insert((i, e));
             }
             Err(e) => {
                 let over = e.contains("budget") || e.contains("Budget");
-                failure = Some((i, e, over));
-                break;
+                failure.get_or_insert((i, e, over));
             }
         }
     }
+    let memory = judge_memory(&game, &price, class.as_ref());
     // ADMISSION'S ONE TIMING GATE, run as a node runs it: PROBE_RUNS inferences over zero-filled
     // inputs at the manifest's probe_dims, their median inside the game's turn. The admitting
     // runner's models.max_probe_ms IS that turn_ms (web's configs.sh checks it), so this compares
@@ -93,7 +136,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // again, and a model slow there on every attempt expires PROBE_TOO_SLOW.
     let probe = model.probe();
     let probe_ok = matches!(&probe, Ok((ms, _)) if *ms <= deadline as f64);
-    let ok = failure.is_none() && probe_ok;
+    let memory_ok = memory.verdict.is_none() && round_trip.failed == 0;
+    let ok = failure.is_none() && probe_ok && memory_ok;
 
     if json_out {
         // Machine-readable, for a repository that automates this -- exporting a model into a
@@ -133,6 +177,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     "dims": probe.as_ref().ok().map(|(_, dims)| dims.clone()),
                     "error": probe.as_ref().err(),
                 },
+                "memory": memory.json(chained.then_some(&round_trip)),
             }))
             .map_err(|e| e.to_string())?
         );
@@ -169,6 +214,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         println!();
         report_probe(&probe, deadline);
+        if memory.declared() {
+            println!();
+            memory.report(chained.then_some(&round_trip));
+        }
         println!();
         println!(
             "This is not admission. It has no download allowlist and does not decide a size class,"
@@ -179,6 +228,145 @@ pub fn run(args: &[String]) -> Result<(), String> {
         return Err("check failed".to_string());
     }
     Ok(())
+}
+
+/// `--memory-flat-bytes N` and `--memory-cell-bytes N` out of the arguments, and what is left. Either
+/// one names a class, and the other is then 0; neither leaves the memory unjudged.
+fn class_of(args: &[String]) -> Result<(Option<Class>, Vec<String>), String> {
+    let mut rest = Vec::new();
+    let (mut flat, mut cell) = (None, None);
+    let mut i = 0;
+    while i < args.len() {
+        let slot = match args[i].as_str() {
+            "--json" => None,
+            "--memory-flat-bytes" => Some((&mut flat, memory::FLAT_BYTES_MAX)),
+            "--memory-cell-bytes" => Some((&mut cell, memory::CELL_BYTES_MAX)),
+            other => {
+                rest.push(other.to_string());
+                None
+            }
+        };
+        if let Some((slot, max)) = slot {
+            let flag = &args[i];
+            i += 1;
+            let n = args
+                .get(i)
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|n| *n <= max)
+                .ok_or_else(|| format!("{flag} takes a whole number from 0 to {max}"))?;
+            *slot = Some(n);
+        }
+        i += 1;
+    }
+    let class = (flat.is_some() || cell.is_some())
+        .then(|| Class { flat: flat.unwrap_or(0), cell: cell.unwrap_or(0) });
+    Ok((class, rest))
+}
+
+/// How the chained observations went for a model with memory: the calls that were fed their
+/// predecessor's memory, and of those the ones that failed, which the admitting runner reports as
+/// `probe.round_trip` and Soma refuses as `MEMORY_ROUND_TRIP`.
+#[derive(Default)]
+struct RoundTrip {
+    checked: u64,
+    failed: u64,
+    first: Option<(usize, String)>,
+}
+
+/// The memory's price and, when a class was named, its verdict.
+struct MemoryReport {
+    price: Result<Option<Price>, Verdict>,
+    /// The smallest and largest board the envelope allows, in cells, when the release declares one.
+    cells: Option<(u64, u64)>,
+    class: Option<(u64, u64)>,
+    verdict: Option<Verdict>,
+}
+
+fn judge_memory(
+    game: &crate::registry::Game,
+    price: &Result<Option<Price>, Verdict>,
+    class: Option<&Class>,
+) -> MemoryReport {
+    let cells = game.envelope().and_then(|env| {
+        let side = env.get("sides")?.as_array()?.first()?.as_u64()?;
+        Some((side * side, env.get("cells_max")?.as_u64()?))
+    });
+    let verdict = match (price, class, cells) {
+        (Err(v), ..) => Some(v.clone()),
+        (Ok(Some(p)), Some(c), Some((lo, hi))) => memory::judge(p, c.flat, c.cell, lo, hi).err(),
+        // A release with no limits.boards has no smallest or largest board to price at.
+        _ => None,
+    };
+    MemoryReport { price: price.clone(), cells, class: class.map(|c| (c.flat, c.cell)), verdict }
+}
+
+impl MemoryReport {
+    fn declared(&self) -> bool {
+        !matches!(self.price, Ok(None))
+    }
+
+    fn json(&self, round_trip: Option<&RoundTrip>) -> Value {
+        if !self.declared() {
+            return Value::Null;
+        }
+        let p = self.price.as_ref().ok().copied().flatten();
+        json!({
+            "fixed_bytes": p.map(|p| p.fixed),
+            "cell_bytes": p.map(|p| p.per_cell),
+            "cells_min": self.cells.map(|c| c.0),
+            "cells_max": self.cells.map(|c| c.1),
+            "bytes_at_min": p.zip(self.cells).map(|(p, c)| p.bytes(c.0)),
+            "bytes_at_max": p.zip(self.cells).map(|(p, c)| p.bytes(c.1)),
+            "class": self.class.map(|(f, c)| json!({"memory_flat_bytes": f, "memory_cell_bytes": c})),
+            "verdict": self.verdict.as_ref().map(|v| v.0),
+            "reason": self.verdict.as_ref().map(|v| v.1.clone()),
+            "round_trip": round_trip.map(|r| json!({
+                "checked": r.checked,
+                "failed": r.failed,
+                "failing_case": r.first.as_ref().map(|f| f.0),
+                "reason": r.first.as_ref().map(|f| f.1.clone()),
+            })),
+        })
+    }
+
+    fn report(&self, round_trip: Option<&RoundTrip>) {
+        println!("memory");
+        if let Ok(Some(p)) = &self.price {
+            println!("    fixed            {} bytes", p.fixed);
+            println!("    per cell         {} bytes", p.per_cell);
+            if let Some((lo, hi)) = self.cells {
+                println!("    at {lo:<5} cells   {} bytes  (the smallest board)", p.bytes(lo));
+                println!("    at {hi:<5} cells   {} bytes  (the largest board)", p.bytes(hi));
+            }
+        }
+        match (&self.class, &self.verdict) {
+            (_, Some((code, why))) => println!("    FAILED  {code}: {why}"),
+            (Some(_), None) if self.cells.is_none() => println!(
+                "    not judged: this release declares no limits.boards, so there is no board to \
+                 price it at"
+            ),
+            (Some((f, c)), None) => {
+                println!("    PASSED  under a class of {f} bytes flat and {c} a cell");
+            }
+            (None, None) => println!(
+                "    not judged: name the season's class with --memory-flat-bytes and \
+                 --memory-cell-bytes"
+            ),
+        }
+        if let Some(r) = round_trip {
+            println!(
+                "    round trip       {} observations fed their predecessor's memory, {} failed",
+                r.checked, r.failed
+            );
+            if let Some((i, e)) = &r.first {
+                println!("    FAILED  MEMORY_ROUND_TRIP: observation {i}: {e}");
+                println!(
+                    "    the memory input does not take the model's own memory output: every \
+                     match would strike from turn 1"
+                );
+            }
+        }
+    }
 }
 
 /// Read the head the way `kalam-match` reads it, and say why if it cannot.

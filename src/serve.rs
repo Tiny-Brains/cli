@@ -8,6 +8,11 @@
 //! The server is deliberately tiny and deliberately loopback-only. It exists to put a file in a
 //! browser, and a viewer that needed a real web server would have put one more thing between a
 //! competitor and their first replay.
+//!
+//! The page mounts the replay on the Stage tier, named rather than left to the viewer's default,
+//! and under it the viewer's graph (`mountGraph`, from `graph.js`) when the bundle ships one. It
+//! imports the module as a namespace so an older bundle without the export still plays the replay;
+//! `serve` answers every file of the viewer's directory, so `graph.js` needs no route.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
@@ -136,22 +141,35 @@ const PAGE: &str = r##"<!doctype html>
 <style>
   html,body { margin:0; height:100%; background:#F5F8FF; color:#142642; }
   @media (prefers-color-scheme: dark) { html,body { background:#090F1D; color:#EEF3FF; } }
-  #app { height:100%; display:flex; }
-  #app > .tb-viz { flex:1; }
+  #app { height:100%; display:flex; flex-direction:column; }
+  #stage { flex:1; min-height:0; display:flex; }
+  #stage > .tb-viz { flex:1; }
+  #graph { flex:none; }
   #boot { font:14px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
           color:#536780; padding:24px; }
   @media (prefers-color-scheme: dark) { #boot { color:#A6B5D1; } }
 </style>
 </head>
 <body>
-<div id="app"><div id="boot">decoding the match…</div></div>
+<div id="app"><div id="stage"><div id="boot">decoding the match…</div></div><div id="graph"></div></div>
 <script type="module">
-  import { mount, optsFromHash } from "./viz.js";
+  // A namespace, not named imports: a named import the bundle lacks fails the whole module, and
+  // an older viewer has no mountGraph.
+  import * as viz from "./viz.js";
   try {
     const replay = await (await fetch("./replay.json")).json();
     document.getElementById("boot")?.remove();
     // A link can point at a moment: #turn=84, or #from=40&to=60&autoplay=1.
-    await mount("#app", replay, { autoplay: false, ...optsFromHash() });
+    const viewer = await viz.mount("#stage", replay, {
+      autoplay: false, ...(viz.optsFromHash?.() ?? {}), tier: "stage",
+    });
+    // The graph under the replay when the viewer ships one; without it the replay plays alone.
+    const graph = document.getElementById("graph");
+    if (typeof viz.mountGraph === "function") {
+      try { await viz.mountGraph(graph, viewer, {}); } catch { graph.remove(); }
+    } else {
+      graph.remove();
+    }
   } catch (e) {
     document.getElementById("app").innerHTML =
       '<div id="boot">' + String(e && e.message || e) + "</div>";
