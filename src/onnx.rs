@@ -30,6 +30,42 @@ pub struct Stats {
     pub opset: i64,
 }
 
+/// The ONNX surface admission allows: the deployment's `op_allowlist`, `opset_min` and
+/// `opset_max` (soma's `docker/soma.toml.tmpl`), which the book publishes on its *Format* page
+/// and web's `scripts/check/configs.sh` holds equal to this copy. An operator off the list is
+/// `OP_NOT_ALLOWED` at admission, whatever this binary's runtime can execute -- `GreaterOrEqual`
+/// runs here and is refused there -- so `check` refuses it first. INTERIM like Orion's operator
+/// list in `model.rs`: a copy until a node's policy can be read by a binary that links no node.
+pub const OP_ALLOWLIST: &[&str] = &[
+    "Abs", "Add", "And", "ArgMax", "ArgMin", "AveragePool", "BatchNormalization", "Cast", "Ceil",
+    "Clip", "Concat", "Constant", "ConstantOfShape", "Conv", "Div", "Elu", "Equal", "Erf", "Exp",
+    "Expand", "Flatten", "Floor", "Gather", "GatherElements", "Gemm", "GlobalAveragePool",
+    "GlobalMaxPool", "Greater", "HardSigmoid", "Identity", "InstanceNormalization",
+    "LayerNormalization", "LeakyRelu", "Less", "Log", "LogSoftmax", "MatMul", "Max", "MaxPool",
+    "Mean", "Min", "Mul", "Neg", "Not", "Or", "Pad", "Pow", "PRelu", "Range", "Reciprocal",
+    "ReduceMax", "ReduceMean", "ReduceMin", "ReduceSum", "Relu", "Reshape", "Resize", "Selu",
+    "Shape", "Sigmoid", "Sign", "Slice", "Softmax", "Softplus", "Split", "Sqrt", "Squeeze", "Sub",
+    "Sum", "Tanh", "Tile", "Transpose", "Unsqueeze", "Where",
+];
+pub const OPSET_MIN: i64 = 13;
+pub const OPSET_MAX: i64 = 19;
+
+/// The operators a graph uses that admission refuses: anything off [`OP_ALLOWLIST`], an operator
+/// of another domain included, since the list names the default domain's.
+pub fn refused(stats: &Stats) -> Vec<String> {
+    stats
+        .operators
+        .iter()
+        .filter(|op| !OP_ALLOWLIST.contains(&op.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Whether the graph's opset is one admission accepts.
+pub fn opset_allowed(stats: &Stats) -> bool {
+    (OPSET_MIN..=OPSET_MAX).contains(&stats.opset)
+}
+
 fn parse(bytes: &[u8]) -> Result<ModelProto, String> {
     <ModelProto as Message>::decode(bytes).map_err(|e| format!("not an ONNX document: {e}"))
 }
@@ -138,5 +174,40 @@ impl Acc {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stats(ops: &[&str], opset: i64) -> Stats {
+        Stats {
+            parameters: 0,
+            nodes: ops.len() as u64,
+            operators: ops.iter().map(|s| s.to_string()).collect(),
+            ir_version: 8,
+            opset,
+        }
+    }
+
+    #[test]
+    fn an_operator_off_the_allowlist_is_named_and_one_on_it_is_not() {
+        let s = stats(&["Conv", "GreaterOrEqual", "Relu", "ai.onnx.ml.TreeEnsemble"], 17);
+        assert_eq!(refused(&s), vec!["GreaterOrEqual".to_string(), "ai.onnx.ml.TreeEnsemble".to_string()]);
+        assert!(refused(&stats(&["Conv", "Greater", "Where", "Floor"], 17)).is_empty());
+    }
+
+    #[test]
+    fn the_opset_must_sit_inside_the_deployments_range() {
+        assert!(opset_allowed(&stats(&[], 13)) && opset_allowed(&stats(&[], 19)));
+        assert!(!opset_allowed(&stats(&[], 12)) && !opset_allowed(&stats(&[], 20)));
+    }
+
+    #[test]
+    fn the_allowlist_is_the_books_list_without_repeats() {
+        let set: std::collections::BTreeSet<_> = OP_ALLOWLIST.iter().collect();
+        assert_eq!(set.len(), OP_ALLOWLIST.len());
+        assert!(!OP_ALLOWLIST.contains(&"GreaterOrEqual") && OP_ALLOWLIST.contains(&"Greater"));
     }
 }

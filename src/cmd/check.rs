@@ -137,7 +137,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let probe = model.probe();
     let probe_ok = matches!(&probe, Ok((ms, _)) if *ms <= deadline as f64);
     let memory_ok = memory.verdict.is_none() && round_trip.failed == 0;
-    let ok = failure.is_none() && probe_ok && memory_ok;
+    // THE ONNX SURFACE, as admission reads it off the document: an operator off the allowlist is
+    // OP_NOT_ALLOWED there, whatever this binary's runtime executes, and an opset outside the
+    // range is refused the same way.
+    let op_not_allowed = crate::onnx::refused(&stats);
+    let opset_ok = crate::onnx::opset_allowed(&stats);
+    let surface_ok = op_not_allowed.is_empty() && opset_ok;
+    let ok = failure.is_none() && probe_ok && memory_ok && surface_ok;
 
     if json_out {
         // Machine-readable, for a repository that automates this -- exporting a model into a
@@ -178,6 +184,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     "error": probe.as_ref().err(),
                 },
                 "memory": memory.json(chained.then_some(&round_trip)),
+                "surface": {
+                    "ok": surface_ok,
+                    "op_not_allowed": op_not_allowed,
+                    "opset_ok": opset_ok,
+                    "opset_range": [crate::onnx::OPSET_MIN, crate::onnx::OPSET_MAX],
+                },
             }))
             .map_err(|e| e.to_string())?
         );
@@ -213,6 +225,21 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
         }
         println!();
+        if !op_not_allowed.is_empty() {
+            println!(
+                "    FAILED  OP_NOT_ALLOWED: {} -- admission refuses an operator off its allowlist, \
+                 which the book's Format page lists; this runtime executing it is beside the point",
+                op_not_allowed.join(", ")
+            );
+        }
+        if !opset_ok {
+            println!(
+                "    FAILED  OPSET: the graph declares opset {}, and admission takes {} to {}",
+                stats.opset,
+                crate::onnx::OPSET_MIN,
+                crate::onnx::OPSET_MAX
+            );
+        }
         report_probe(&probe, deadline);
         if memory.declared() {
             println!();
