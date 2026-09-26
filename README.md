@@ -300,13 +300,17 @@ cargo clippy --locked --release -- -D warnings
 ```
 
 `cargo test` runs the unit tests: the memory carry, its pricing and verdicts, and the season-board
-name rule. On every push to `main` and on every pull request, `.github/workflows/check.yml` does two
-things:
-- it runs format, lint and a locked build
-- it clones [ants-starter](https://github.com/Tiny-Brains/ants-starter) and runs `games`, `check`
+name rule. On every push to `main` and on every pull request, `.github/workflows/check.yml`:
+- runs format, lint, the unit tests and a locked build
+- clones [ants-starter](https://github.com/Tiny-Brains/ants-starter) and runs `games`, `check`
   and the starter's self-play match with the new binary, which also exercises the release fetch
+- plays `fixtures/memflaky/match.json` and runs `conform` over `fixtures/memflaky/replay.json`,
+  the envelope Kalam's own match loop wrote for that match on the release the starter pins
 
-For `src/wave.rs`, the check that matters is `tinybrains conform` on a replay the ladder wrote.
+For `src/wave.rs`, the check that matters is `tinybrains conform` on a replay Kalam wrote, and the
+fixture is one: a seat with a memory, struck from turn 3 and forfeited at the ceiling. A new ants
+release in the starter's `games.toml`, or a byte changed in the fixture's graphs or manifests, is
+a re-record with `scripts/record-replay.py` (its header says what it needs).
 
 To play against a local cartridge build, write a registry whose entry is
 `path = "<ants checkout>/dist"`, and point `TINYBRAINS_REGISTRY` at it.
@@ -354,6 +358,8 @@ src/store.rs           the content-addressed cache
 src/timing.rs          --timings
 src/serve.rs           the local server `view` uses
 wit/                   the plugin ABI the component exports
+fixtures/memflaky/     two hand-built graphs, their match file, and the replay Kalam's loop wrote for it
+scripts/record-replay.py  re-records that replay through kalam's workflow on a cartridge release
 scripts/formula.sh     renders the Homebrew formula from a release's SHA256SUMS
 Formula/               the tap, written by the release workflow
 .github/workflows/     check.yml on every push; release.yml on a v* tag
@@ -365,7 +371,8 @@ Formula/               the tap, written by the release workflow
   game is a registry entry, not Rust.
 - **A local result and a ladder result are the same match.** `src/wave.rs` is the only copy of
   Kalam's wave loop. A change to Kalam's claim, strike, forfeit, rank or memory rules is a change
-  here in the same batch, and `conform` shows whether it was made.
+  here in the same batch, and `conform` shows whether it was made: CI runs it over the replay in
+  `fixtures/memflaky/`, and a replay from the ladder is the same check.
 - **The memory rules are Soma's and Kalam's.** The verdict codes, the dtype widths, the named
   dimension limits and the bounds on the class numbers (`FLAT_BYTES_MAX`, `CELL_BYTES_MAX`) in
   `src/memory.rs` copy the admit clock and `weight_classes_ok()`. The name rule in `maps check`

@@ -79,7 +79,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     println!();
     println!(
         "A difference in the action stream is the one that matters: ranks and scores can agree \
-         while the match that produced them differs. wave.rs names the five behaviours it has to \
+         while the match that produced them differs. wave.rs names the six behaviours it has to \
          copy from Kalam -- start there."
     );
     Err("conformance failed".to_string())
@@ -107,8 +107,16 @@ fn match_file_for(env: &Value) -> Result<Value, String> {
         }));
     }
 
+    // The two terms the envelope carries. `turn_ms` is not one of them: a deadline strike is a
+    // fact about the runner's clock, and no replay of it is due.
+    let mut vars =
+        json!({ "max_turns": env.get("max_turns").and_then(Value::as_u64).unwrap_or(1000) });
+    if let Some(c) = env.get("strike_ceiling").and_then(Value::as_u64) {
+        vars["strike_ceiling"] = json!(c);
+    }
+
     Ok(json!({
-        "vars": { "max_turns": env.get("max_turns").and_then(Value::as_u64).unwrap_or(1000) },
+        "vars": vars,
         "rows": [{
             "id": env.get("match_id").and_then(Value::as_str).unwrap_or("conform"),
             "seed": env["seed"],

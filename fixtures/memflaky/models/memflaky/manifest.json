@@ -1,0 +1,312 @@
+{
+ "abi": "orion:model@1.0.0",
+ "name": "tb.v.memflaky",
+ "version": "1",
+ "format": "onnx",
+ "artifact": "model.onnx",
+ "description": "memgraph whose adapter refuses once its counter reads 3",
+ "inputs": [
+  {
+   "adapter": {
+    "reshape": [
+     {
+      "stack": [
+       [
+        {
+         "scatter": [
+          {
+           "var": "mine"
+          },
+          {
+           "var": "size"
+          },
+          "i8"
+         ]
+        },
+        {
+         "scatter": [
+          {
+           "map": [
+            {
+             "var": "foes"
+            },
+            [
+             {
+              "var": "0"
+             },
+             {
+              "var": "1"
+             }
+            ]
+           ]
+          },
+          {
+           "var": "size"
+          },
+          "i8"
+         ]
+        },
+        {
+         "scatter": [
+          {
+           "var": "food"
+          },
+          {
+           "var": "size"
+          },
+          "i8"
+         ]
+        },
+        {
+         "rle_expand": [
+          {
+           "var": "water.rle"
+          },
+          {
+           "var": "size"
+          },
+          "i8"
+         ]
+        },
+        {
+         "scatter": [
+          {
+           "map": [
+            {
+             "filter": [
+              {
+               "var": "hills"
+              },
+              {
+               "==": [
+                {
+                 "var": "2"
+                },
+                0
+               ]
+              }
+             ]
+            },
+            [
+             {
+              "var": "0"
+             },
+             {
+              "var": "1"
+             }
+            ]
+           ]
+          },
+          {
+           "var": "size"
+          },
+          "i8"
+         ]
+        },
+        {
+         "scatter": [
+          {
+           "map": [
+            {
+             "filter": [
+              {
+               "var": "hills"
+              },
+              {
+               "!=": [
+                {
+                 "var": "2"
+                },
+                0
+               ]
+              }
+             ]
+            },
+            [
+             {
+              "var": "0"
+             },
+             {
+              "var": "1"
+             }
+            ]
+           ]
+          },
+          {
+           "var": "size"
+          },
+          "i8"
+         ]
+        },
+        {
+         "rle_expand": [
+          {
+           "var": "vis.rle"
+          },
+          {
+           "var": "size"
+          },
+          "i8"
+         ]
+        }
+       ],
+       0
+      ]
+     },
+     {
+      "merge": [
+       [
+        1,
+        7
+       ],
+       {
+        "var": "size"
+       }
+      ]
+     }
+    ]
+   },
+   "dtype": "i8",
+   "name": "board",
+   "shape": [
+    1,
+    7,
+    "H",
+    "W"
+   ]
+  },
+  {
+   "name": "memory_in",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    "H",
+    "W"
+   ],
+   "adapter": {
+    "if": [
+     {
+      "!": {
+       "var": "memory"
+      }
+     },
+     {
+      "zeros": [
+       {
+        "merge": [
+         [
+          1,
+          2
+         ],
+         {
+          "var": "size"
+         }
+        ]
+       },
+       "f32"
+      ]
+     },
+     {
+      "==": [
+       {
+        "reduce": [
+         {
+          "to_list": [
+           {
+            "reshape": [
+             {
+              "crop": [
+               {
+                "tensor": [
+                 {
+                  "var": "memory"
+                 }
+                ]
+               },
+               [
+                0,
+                1,
+                0,
+                0
+               ],
+               [
+                1,
+                1,
+                1,
+                1
+               ]
+              ]
+             },
+             [
+              1
+             ]
+            ]
+           }
+          ]
+         },
+         {
+          "+": [
+           {
+            "var": "current"
+           },
+           {
+            "var": "accumulator"
+           }
+          ]
+         },
+         0
+        ]
+       },
+       3
+      ]
+     },
+     {
+      "zeros": [
+       [
+        1,
+        2,
+        1,
+        1
+       ],
+       "f32"
+      ]
+     },
+     {
+      "tensor": [
+       {
+        "var": "memory"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ],
+ "outputs": [
+  {
+   "name": "policy",
+   "dtype": "f32",
+   "shape": [
+    1,
+    5,
+    "H",
+    "W"
+   ]
+  },
+  {
+   "name": "memory",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    "H",
+    "W"
+   ]
+  }
+ ],
+ "probe_dims": {
+  "H": 124,
+  "W": 120
+ }
+}

@@ -1,0 +1,5 @@
+{ "game": "ants", "vars": { "max_turns": 10 },
+  "rows": [ { "id": "memflaky", "seed": 7, "map": "basic-tiny-2p", "seat_count": 2,
+    "seats": [
+      { "seat": 0, "weights": "models/memflaky/model.onnx", "manifest": "models/memflaky/manifest.json", "label": "memflaky" },
+      { "seat": 1, "weights": "models/memgraph/model.onnx", "manifest": "models/memgraph/manifest.json", "label": "memgraph" } ] } ] }

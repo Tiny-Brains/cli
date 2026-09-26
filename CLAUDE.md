@@ -10,7 +10,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - hosts a cartridge as a training environment (`env`)
 
 It builds, checks and releases from this repository alone. It links no sibling and reads no path
-outside itself. `README.md` covers commands, the registry, environment variables and releasing.
+outside itself; the one script that reads a kalam checkout, `scripts/record-replay.py`, is handed
+it by hand at re-record time and runs in no workflow. `README.md` covers commands, the registry,
+environment variables and releasing.
 `../CLAUDE.md` is the platform map.
 
 ## Checks
@@ -21,6 +23,12 @@ cargo clippy --locked --release -- -D warnings         # CI gates on this
 cargo build --release                                  # rust-toolchain.toml pins rustc exactly
 cargo test --release                                   # memory carry and pricing, maps name rule
 
+# the wave loop against Kalam's: the fixture's match seeds the store, then conform replays the
+# envelope Kalam wrote for it (Rules, below)
+export TINYBRAINS_REGISTRY=../ants-starter/games.toml
+./target/release/tinybrains fixtures/memflaky/match.json --out /tmp/replays
+./target/release/tinybrains conform fixtures/memflaky/replay.json
+
 # then run it where a registry is: the starter kit carries one
 cd ../ants-starter
 ../cli/target/release/tinybrains games
@@ -30,8 +38,9 @@ cd ../ants-starter
 ```
 
 The unit tests cover what can be checked without a cartridge. For `src/wave.rs` the check that
-matters is `tinybrains conform` on a replay the ladder wrote. After a dependency change, run
-`cargo tree -e normal,build --target all -d` to look for new duplicates.
+matters is `tinybrains conform` on a replay Kalam wrote, and `fixtures/memflaky/replay.json` is
+one; `.github/workflows/check.yml` runs all of the above on every push. After a dependency
+change, run `cargo tree -e normal,build --target all -d` to look for new duplicates.
 
 ## Rules
 
@@ -54,6 +63,20 @@ matters is `tinybrains conform` on a replay the ladder wrote. After a dependency
   `memory` and `ant_memory` when the call answered, before the head is read, as Kalam's `acts` task
   does. `conform` diffs every field and every turn. A difference in `deltas` is the one that
   matters, because ranks and scores can agree while the matches that produced them differed.
+- **`fixtures/memflaky/` is a match Kalam played, and the two graphs it played. No trained model
+  lives here.** `memgraph` and `memflaky` are one hand-built graph of fourteen nodes under two
+  manifests: it writes a food-seen plane and a turn counter to `memory`; memgraph reads them back,
+  and memflaky's adapter refuses once the counter reads 3. So Kalam strikes memflaky from turn 3,
+  keeps its memory through each strike (the counter stays at 3, so the refusal repeats), forfeits
+  it at the ceiling and omits it after, and `conform` proves `wave.rs` does the same, turn by turn.
+  `replay.json` is the envelope Kalam's own `kalam-match-run` wrote for `match.json`, recorded by
+  `scripts/record-replay.py` through `orion-server dry-run` with the gate stubbed as kalam's own
+  offline cases stub it, on the release the starter pins, with each seat under the fixture files'
+  real digests. Two things make it stale, and each is a re-record
+  (`scripts/record-replay.py memflaky <unpacked release> [<kalam checkout>]`):
+  - a new ants release in the starter's `games.toml`: `conform` refuses a replay from another
+    engine, so CI fails at the conform step until the replay is played on the new one
+  - a byte changed in a graph or a manifest: the envelope names their hashes
 - **`src/memory.rs` copies Soma's rules, not Orion's.** The verdict codes, the dtype widths, the
   named-dimension limits and `FLAT_BYTES_MAX`/`CELL_BYTES_MAX` are the admit clock's and
   `weight_classes_ok()`'s. The name rule in `cmd/maps.rs` is `season_map_name_problem()`, and its

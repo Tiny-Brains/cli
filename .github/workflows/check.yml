@@ -1,10 +1,12 @@
 # THE PASS THIS REPOSITORY DEFINES, ON EVERY PUSH.
 #
-# There are no unit tests and no test runner: `tinybrains conform` is the check that matters, and
-# it needs a replay the ladder wrote. What a push can prove is that the crate is
-# formatted, lints clean, builds from the lockfile -- and that the binary still does what the one
-# repository every competitor clones asks of it: `ants-starter`'s own CI, run with THIS build. That
-# clone is a test input and not a build input; nothing here compiles against it.
+# Four things a push can prove. The crate is formatted, lints clean and builds from the lockfile.
+# `cargo test` covers what needs no cartridge: the memory carry and its pricing, and the
+# season-board name rule. The binary still does what the one repository every competitor clones
+# asks of it: `ants-starter`'s own CI, run with THIS build. And `src/wave.rs` still plays a match
+# the way Kalam's loop played it: `tinybrains conform` over fixtures/memflaky/replay.json, an
+# envelope Kalam's own workflow wrote on the release the starter pins (CLAUDE.md, Rules). The
+# starter clone is a test input and not a build input; nothing here compiles against it.
 
 name: check
 
@@ -32,6 +34,9 @@ jobs:
       - name: Lint
         run: cargo clippy --locked --release -- -D warnings
 
+      - name: Test
+        run: cargo test --locked --release
+
       - name: Build
         run: cargo build --locked --release
 
@@ -46,3 +51,17 @@ jobs:
           "$bin" games
           "$bin" check model.onnx manifest.json
           "$bin" matches/self-play.json
+
+      # The wave loop against Kalam's. Playing the fixture's match file puts its two graphs in the
+      # store under the digests the replay names; conform then rebuilds the match Kalam played from
+      # the envelope and diffs every turn. The seat struck from turn 3 keeps its memory through each
+      # strike, forfeits at the ceiling and is omitted after, here as there. The replay was played on
+      # the release the starter pins, and conform refuses another engine: when games.toml moves,
+      # re-record it (scripts/record-replay.py).
+      - name: Conform to a replay Kalam wrote
+        env:
+          TINYBRAINS_REGISTRY: ${{ runner.temp }}/starter/games.toml
+        run: |
+          bin="$PWD/target/release/tinybrains"
+          "$bin" fixtures/memflaky/match.json --out "$RUNNER_TEMP/replays"
+          "$bin" conform fixtures/memflaky/replay.json
