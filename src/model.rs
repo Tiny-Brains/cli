@@ -36,7 +36,7 @@ use tract_onnx::prelude::*;
 /// local `check` promises.
 pub const DATALOGIC_VERSION: &str = "5.6";
 
-/// Orion's own operators, as orion-server 1.9.1 registers them on every engine a node evaluates an
+/// Orion's own operators, as orion-server 1.10.0 registers them on every engine a node evaluates an
 /// adapter on (`engine/operators.rs`, `all()`). This build does not have them, and templating mode
 /// reads an unknown operator as data, so an adapter naming one is refused rather than evaluated
 /// differently. INTERIM: the list goes when the operators are shared with Orion, and until then it
@@ -58,7 +58,7 @@ const ORION_OPERATORS: [&str; 10] = [
 /// `model/admission.rs`, `PROBE_RUNS`.
 pub const PROBE_RUNS: usize = 5;
 
-/// The keys orion-server 1.9.1 refuses in any adapter at upload, with its reasons
+/// The keys orion-server 1.10.0 refuses in any adapter at upload, with its reasons
 /// (`model/manifest.rs`, `FORBIDDEN_OPERATORS`). Checked before [`ORION_OPERATORS`], so `random`
 /// is refused for the reason a node gives.
 const FORBIDDEN_OPERATORS: [(&str, &str); 3] = [
