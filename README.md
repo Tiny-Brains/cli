@@ -149,8 +149,8 @@ With `--memory-flat-bytes` and `--memory-cell-bytes`, the class's cap is
 
 | Code | When |
 |---|---|
-| `MEMORY_SHAPE` | A memory output names too many dimensions, names one twice, or lacks a dtype with a width or a shape |
-| `MEMORY_NOT_ALLOWED` | The manifest declares a memory output and the class allows 0 and 0 |
+| `MEMORY_SHAPE` | A memory output names too many dimensions, names one twice, is declared twice, or lacks a dtype with a width or a shape |
+| `MEMORY_NOT_ALLOWED` | The manifest declares a memory output and the class allows 0 and 0. Judged before the shape, as the admit clock judges it, so a badly shaped memory in such a class is this and not `MEMORY_SHAPE` |
 | `MEMORY_TOO_LARGE` | The memory is over the cap at the smallest or the largest board |
 | `MEMORY_ROUND_TRIP` | A call that was fed the model's own memory failed |
 

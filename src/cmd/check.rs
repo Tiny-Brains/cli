@@ -128,7 +128,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
         }
     }
-    let memory = judge_memory(&game, &price, class.as_ref());
+    let cells = game.envelope().and_then(|env| {
+        let side = env.get("sides")?.as_array()?.first()?.as_u64()?;
+        Some((side * side, env.get("cells_max")?.as_u64()?))
+    });
+    let memory = judge_memory(cells, &price, class.as_ref());
     // ADMISSION'S ONE TIMING GATE, run as a node runs it: PROBE_RUNS inferences over zero-filled
     // inputs at the manifest's probe_dims, their median inside the game's turn. The admitting
     // runner's models.max_probe_ms IS that turn_ms (web's configs.sh checks it), so this compares
@@ -309,16 +313,20 @@ struct MemoryReport {
     verdict: Option<Verdict>,
 }
 
+/// `cells` is the smallest and the largest board the release's envelope allows, or `None` when it
+/// declares none -- read by the caller so the ladder below is a function of its arguments alone.
 fn judge_memory(
-    game: &crate::registry::Game,
+    cells: Option<(u64, u64)>,
     price: &Result<Option<Price>, Verdict>,
     class: Option<&Class>,
 ) -> MemoryReport {
-    let cells = game.envelope().and_then(|env| {
-        let side = env.get("sides")?.as_array()?.first()?.as_u64()?;
-        Some((side * side, env.get("cells_max")?.as_u64()?))
-    });
+    // `memory_price()`'s ladder, in its order: a class that allows no memory at all refuses one
+    // BEFORE its shape is judged, so a badly shaped memory under a 0/0 class is MEMORY_NOT_ALLOWED
+    // there and must be here. `price` is `Ok(None)` exactly when no memory output was declared,
+    // which is the `IF NOT declared` the ladder opens with.
+    let declared = !matches!(price, Ok(None));
     let verdict = match (price, class, cells) {
+        (_, Some(c), _) if declared && c.flat == 0 && c.cell == 0 => Some(memory::not_allowed()),
         (Err(v), ..) => Some(v.clone()),
         (Ok(Some(p)), Some(c), Some((lo, hi))) => memory::judge(p, c.flat, c.cell, lo, hi).err(),
         // A release with no limits.boards has no smallest or largest board to price at.
@@ -337,6 +345,14 @@ impl MemoryReport {
             return Value::Null;
         }
         let p = self.price.as_ref().ok().copied().flatten();
+        // A failed round trip is a verdict in the table README prints and the one the text report
+        // names, so `--json` carries a code for it too -- a caller branching on `verdict` saw
+        // `ok: false` with nothing to branch on. The priced verdict wins when there is one, which
+        // is the order `report` prints them in.
+        let verdict = self.verdict.clone().or_else(|| {
+            let (i, e) = round_trip?.first.as_ref()?;
+            Some(("MEMORY_ROUND_TRIP", format!("observation {i}: {e}")))
+        });
         json!({
             "fixed_bytes": p.map(|p| p.fixed),
             "cell_bytes": p.map(|p| p.per_cell),
@@ -345,8 +361,8 @@ impl MemoryReport {
             "bytes_at_min": p.zip(self.cells).map(|(p, c)| p.bytes(c.0)),
             "bytes_at_max": p.zip(self.cells).map(|(p, c)| p.bytes(c.1)),
             "class": self.class.map(|(f, c)| json!({"memory_flat_bytes": f, "memory_cell_bytes": c})),
-            "verdict": self.verdict.as_ref().map(|v| v.0),
-            "reason": self.verdict.as_ref().map(|v| v.1.clone()),
+            "verdict": verdict.as_ref().map(|v| v.0),
+            "reason": verdict.as_ref().map(|v| v.1.clone()),
             "round_trip": round_trip.map(|r| json!({
                 "checked": r.checked,
                 "failed": r.failed,
@@ -467,4 +483,72 @@ fn report_graph(stats: &crate::onnx::Stats, model: &Model, size_metric: usize) {
     );
     println!("    operators        {}", stats.operators.join(", "));
     println!("    inputs           {}", model.input_names().join(" "));
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    const ENVELOPE: Option<(u64, u64)> = Some((576, 14_880));
+
+    fn shaped() -> Result<Option<Price>, Verdict> {
+        memory::price(&json!({
+            "outputs": [{"name": "memory", "dtype": "f32", "shape": ["A", "B", "C"]}]
+        }))
+    }
+
+    #[test]
+    fn a_class_allowing_no_memory_refuses_before_the_shape_is_judged() {
+        // Soma's ladder reaches `flat = 0 AND cell = 0` before `bad`, so a memory that is BOTH
+        // badly shaped and in a class that allows none is MEMORY_NOT_ALLOWED at admission.
+        assert_eq!(shaped().map_err(|e| e.0), Err("MEMORY_SHAPE"));
+        let class = Class { flat: 0, cell: 0 };
+        let r = judge_memory(ENVELOPE, &shaped(), Some(&class));
+        assert_eq!(r.verdict.as_ref().map(|v| v.0), Some("MEMORY_NOT_ALLOWED"));
+    }
+
+    #[test]
+    fn a_bad_shape_under_a_class_that_allows_memory_is_still_memory_shape() {
+        let class = Class { flat: 1024, cell: 1 };
+        let r = judge_memory(ENVELOPE, &shaped(), Some(&class));
+        assert_eq!(r.verdict.as_ref().map(|v| v.0), Some("MEMORY_SHAPE"));
+    }
+
+    #[test]
+    fn naming_no_class_leaves_a_bad_shape_named_by_its_shape() {
+        let r = judge_memory(ENVELOPE, &shaped(), None);
+        assert_eq!(r.verdict.as_ref().map(|v| v.0), Some("MEMORY_SHAPE"));
+    }
+
+    #[test]
+    fn a_manifest_with_no_memory_is_not_refused_by_a_class_that_allows_none() {
+        let none = memory::price(&json!({"outputs": [{"name": "policy", "dtype": "f32"}]}));
+        let class = Class { flat: 0, cell: 0 };
+        assert!(judge_memory(ENVELOPE, &none, Some(&class)).verdict.is_none());
+    }
+
+    #[test]
+    fn json_names_the_round_trip_that_failed() {
+        let priced = memory::price(&json!({
+            "outputs": [{"name": "memory", "dtype": "u8", "shape": [4]}]
+        }));
+        let class = Class { flat: 1024, cell: 1 };
+        let r = judge_memory(ENVELOPE, &priced, Some(&class));
+        assert!(r.verdict.is_none(), "the price itself passes");
+
+        let rt = RoundTrip { checked: 3, failed: 1, first: Some((2, "shape [1] vs [4]".into())) };
+        let v = r.json(Some(&rt));
+        assert_eq!(v["verdict"], json!("MEMORY_ROUND_TRIP"));
+        assert_eq!(v["round_trip"]["failing_case"], json!(2));
+    }
+
+    #[test]
+    fn a_priced_verdict_wins_over_a_failed_round_trip() {
+        let class = Class { flat: 0, cell: 0 };
+        let r = judge_memory(ENVELOPE, &shaped(), Some(&class));
+        let rt = RoundTrip { checked: 1, failed: 1, first: Some((0, "no".into())) };
+        assert_eq!(r.json(Some(&rt))["verdict"], json!("MEMORY_NOT_ALLOWED"));
+    }
 }

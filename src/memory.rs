@@ -156,7 +156,13 @@ pub fn price(manifest: &Value) -> Result<Option<Price>, Verdict> {
     let outputs = manifest["outputs"].as_array().map(Vec::as_slice).unwrap_or_default();
     let mut total: Option<Price> = None;
     for (name, names_max) in [("memory", 2usize), ("ant_memory", 1usize)] {
-        let Some(decl) = outputs.iter().find(|o| o["name"] == name) else { continue };
+        let mut decls = outputs.iter().filter(|o| o["name"] == name);
+        let Some(decl) = decls.next() else { continue };
+        // Soma's `bad := bad OR (o ->> 'name') = ANY (seen)`: a name declared twice is a shape
+        // refusal, not the first declaration priced and the rest ignored.
+        if decls.next().is_some() {
+            return Err(shape_err(format!("the `{name}` output is declared more than once")));
+        }
         let dtype = decl["dtype"].as_str().ok_or_else(|| {
             shape_err(format!("the `{name}` output is not declared with a dtype"))
         })?;
@@ -211,6 +217,17 @@ pub fn price(manifest: &Value) -> Result<Option<Price>, Verdict> {
     Ok(total)
 }
 
+/// A class of 0 flat and 0 a cell against a manifest that declares a memory at all.
+///
+/// `memory_price()` reaches this BEFORE it judges the shape, so a caller holding a shape refusal
+/// has to ask this first or it reports `MEMORY_SHAPE` where the admit clock reports this.
+pub fn not_allowed() -> Verdict {
+    (
+        "MEMORY_NOT_ALLOWED",
+        "the manifest declares a memory output and this class allows none".to_string(),
+    )
+}
+
 /// The admit clock's cap on a priced memory: `flat + cell × cells`, checked at the smallest and
 /// the largest board the envelope allows, which covers every board between because both sides
 /// are linear in the cell count.
@@ -222,10 +239,7 @@ pub fn judge(
     cells_max: u64,
 ) -> Result<(), Verdict> {
     if flat == 0 && cell == 0 {
-        return Err((
-            "MEMORY_NOT_ALLOWED",
-            "the manifest declares a memory output and this class allows none".to_string(),
-        ));
+        return Err(not_allowed());
     }
     for cells in [cells_min, cells_max] {
         let (bytes, cap) = (price.bytes(cells), flat.saturating_add(cell.saturating_mul(cells)));
@@ -406,6 +420,17 @@ mod tests {
         ] {
             assert_eq!(price(&manifest(outputs.clone())).map_err(|e| e.0), Err("MEMORY_SHAPE"));
         }
+    }
+
+    #[test]
+    fn one_name_declared_twice_is_memory_shape() {
+        // Soma prices the whole outputs array and refuses a repeated name; taking the first
+        // declaration and ignoring the rest priced a manifest it refuses.
+        let outputs = json!([
+            {"name": "memory", "dtype": "f32", "shape": [4]},
+            {"name": "memory", "dtype": "f32", "shape": [1024, "H", "W"]},
+        ]);
+        assert_eq!(price(&manifest(outputs)).map_err(|e| e.0), Err("MEMORY_SHAPE"));
     }
 
     #[test]
