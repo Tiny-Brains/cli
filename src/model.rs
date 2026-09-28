@@ -36,7 +36,7 @@ use tract_onnx::prelude::*;
 /// local `check` promises.
 pub const DATALOGIC_VERSION: &str = "5.6";
 
-/// Orion's own operators, as orion-server 1.10.0 registers them on every engine a node evaluates an
+/// Orion's own operators, as orion-server 1.11.1 registers them on every engine a node evaluates an
 /// adapter on (`engine/operators.rs`, `all()`). This build does not have them, and templating mode
 /// reads an unknown operator as data, so an adapter naming one is refused rather than evaluated
 /// differently. INTERIM: the list goes when the operators are shared with Orion, and until then it
@@ -58,7 +58,7 @@ const ORION_OPERATORS: [&str; 10] = [
 /// `model/admission.rs`, `PROBE_RUNS`.
 pub const PROBE_RUNS: usize = 5;
 
-/// The keys orion-server 1.10.0 refuses in any adapter at upload, with its reasons
+/// The keys orion-server 1.11.1 refuses in any adapter at upload, with its reasons
 /// (`model/manifest.rs`, `FORBIDDEN_OPERATORS`). Checked before [`ORION_OPERATORS`], so `random`
 /// is refused for the reason a node gives.
 const FORBIDDEN_OPERATORS: [(&str, &str); 3] = [
@@ -609,14 +609,31 @@ pub fn decode(
                 return Err(format!("the head is {w} columns wide and the board is {cols}"));
             }
             let cells = h * w;
-            Ok(mine
-                .iter()
+            // The head is indexed by the OBSERVATION's coordinates, which the shape check above
+            // does not bound: `w` is checked against the board and `h` against nothing. A head
+            // shorter than the board, or an ant outside it, is a refusal here -- on the ladder the
+            // gather answers null and the seat strikes, so a panic would be this binary's alone.
+            if values.len() < c * cells {
+                return Err(format!(
+                    "a per-cell head of [{}, {c}, {h}, {w}] needs {} values and carries {}",
+                    shape[0],
+                    c * cells,
+                    values.len()
+                ));
+            }
+            mine.iter()
                 .map(|(r, col)| {
-                    let flat = r * w + col;
+                    let flat = r
+                        .checked_mul(w)
+                        .and_then(|x| x.checked_add(*col))
+                        .filter(|flat| *flat < cells)
+                        .ok_or_else(|| {
+                            format!("the head is {h}x{w} and an ant is at row {r}, column {col}")
+                        })?;
                     let row: Vec<f32> = (0..c).map(|ch| values[ch * cells + flat]).collect();
-                    pick(&row).to_string()
+                    Ok(pick(&row).to_string())
                 })
-                .collect())
+                .collect()
         }
         2 => {
             let (n, c) = (shape[0], shape[1]);
@@ -735,4 +752,39 @@ fn graph_input_names(onnx: &[u8]) -> Result<Vec<String>, String> {
 
 fn graph_output_names(onnx: &[u8]) -> Result<Vec<String>, String> {
     crate::onnx::io_names(onnx).map(|(_, o)| o)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A per-cell head is indexed by the observation's ant coordinates, and the shape check bounds
+    /// only its width. On the ladder a gather outside the head answers null and the seat strikes,
+    /// so every one of these has to be a refusal rather than a panic -- `check` reports it and
+    /// `wave` scores it a strike.
+    #[test]
+    fn a_per_cell_head_refuses_an_ant_outside_it() {
+        let values = vec![0.0f32; 5 * 2 * 3];
+        // Two rows of three, and an ant on row 4.
+        let e = decode(&[1, 5, 2, 3], &values, &[(4, 1)], 3).unwrap_err();
+        assert!(e.contains("2x3"), "{e}");
+        // A column outside the head, which `w == cols` does not catch either.
+        assert!(decode(&[1, 5, 2, 3], &values, &[(0, 7)], 3).is_err());
+        // A row index large enough to overflow the flat offset rather than merely exceed it.
+        assert!(decode(&[1, 5, 2, 3], &values, &[(usize::MAX, 0)], 3).is_err());
+        // A head carrying fewer values than its own shape claims.
+        assert!(decode(&[1, 5, 2, 3], &values[..4], &[(0, 0)], 3).is_err());
+    }
+
+    #[test]
+    fn a_per_cell_head_that_covers_the_board_still_reads() {
+        // Channel 1 (E) highest at every cell, and a head taller than the board still reads: only
+        // an ant OUTSIDE the head is a refusal.
+        let (h, w) = (4usize, 3usize);
+        let mut values = vec![0.0f32; 5 * h * w];
+        for i in 0..h * w {
+            values[h * w + i] = 1.0;
+        }
+        assert_eq!(decode(&[1, 5, h, w], &values, &[(0, 0), (3, 2)], w).unwrap(), ["E", "E"]);
+    }
 }
