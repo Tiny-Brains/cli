@@ -20,8 +20,9 @@ environment variables and releasing.
 ```sh
 cargo fmt --check                                      # rustfmt.toml: max_width 100
 cargo clippy --locked --release -- -D warnings         # CI gates on this
-cargo build --release                                  # rust-toolchain.toml pins rustc exactly
-cargo test --release                                   # memory carry and pricing, maps name rule
+cargo build --locked --release                         # rust-toolchain.toml pins rustc exactly
+cargo test --locked --release                          # CI runs these four with --locked
+cargo test --release a_struck_call_keeps               # one test: any substring of its name
 
 # the wave loop against Kalam's: the fixture's match seeds the store, then conform replays the
 # envelope Kalam wrote for it (Rules, below)
@@ -37,7 +38,10 @@ cd ../ants-starter
 ../cli/target/release/tinybrains conform replays/self-play.json
 ```
 
-The unit tests cover what can be checked without a cartridge. For `src/wave.rs` the check that
+The unit tests cover what can be checked without a cartridge, and each lives beside what it
+tests: `src/memory.rs` (the carry and its pricing), `src/onnx.rs` (the allowlist and the opset
+range), `src/model.rs` (the per-cell head's bounds), `src/cmd/check.rs` (which refusal a verdict
+names, and `--json`) and `src/cmd/maps.rs` (the board name rule). For `src/wave.rs` the check that
 matters is `tinybrains conform` on a replay Kalam wrote, and `fixtures/memflaky/replay.json` is
 one; `.github/workflows/check.yml` runs all of the above on every push. After a dependency
 change, run `cargo tree -e normal,build --target all -d` to look for new duplicates.
@@ -46,12 +50,16 @@ change, run `cargo tree -e normal,build --target all -d` to look for new duplica
 
 - **It knows no game.** It never links an engine crate and never names a cartridge's types. What
   it knows:
-  - the cartridge's function names
+  - the cartridge's function names, behind the one `invoke` of `wit/orion-plugin.wit`
   - `cartridge.json`
   - the replay envelope
 
-  It finds the component by its `.wasm` extension. It reads every board, seat count and limit from
-  the manifest or the board. A second game is a registry entry and no Rust.
+  `wit/` is Orion's plugin ABI, vendored (`bindgen!` reads `path: "wit"`), and its package version
+  is the ABI version a manifest echoes as `abi`: it changes with Orion and not with a game. The
+  world imports nothing on purpose, so `cartridge.rs` gives the component no WASI, no filesystem
+  and no clock — the sandbox Orion gives it, so that a cartridge cannot disagree with itself
+  between two hosts. It finds the component by its `.wasm` extension, and reads every board, seat
+  count and limit from the manifest or the board. A second game is a registry entry and no Rust.
 - **There is no built-in registry, and there must not be one.** Nothing the binary looks up may
   come from where it was built (`CARGO_MANIFEST_DIR` or any `env!` path). In a released binary,
   that path is a CI runner's directory on someone else's laptop.
@@ -87,6 +95,19 @@ change, run `cargo tree -e normal,build --target all -d` to look for new duplica
     decodes to the same tensor, but `{"var": "memory.tensor.dtype"}` resolves on it and not on a
     node's, so an adapter that looks inside plays differently here. JSON memory comes only from an
     `adapt --obs` file, and `Carry::load` decodes it on the way in.
+- **`src/onnx.rs` copies the deployment's ONNX surface, and reads the document, not a runtime.**
+  `OP_ALLOWLIST`, `OPSET_MIN` and `OPSET_MAX` are soma's `docker/soma.toml.tmpl`, which the book's
+  *Format* page publishes and web's `scripts/check/configs.sh` holds equal to this copy — by
+  `awk`/`grep` over these very declarations, so their spelling (`pub const OP_ALLOWLIST ... = &[`,
+  one operator per line, `pub const OPSET_MIN: i64 = <n>`) is what another repo parses. A runtime
+  executing an operator says nothing about the list: `GreaterOrEqual` runs on tract and is
+  `OP_NOT_ALLOWED` at admission, so `check` refuses it first.
+  - Facts come out of the protobuf. Output names are `graph.output`'s, never tract's node names
+    (which an exporter names freely, so a manifest would be checked against the wrong strings), and
+    `parameters` counts every value the document carries — initializers, tensors and scalar lists in
+    node attributes, and the bodies of `If`, `Loop` and `Scan` — which is Orion's own rule
+    (`model/onnx.rs`). Counting initializers alone would let a graph hide its weights in
+    `Constant` nodes.
 - **`view`'s page imports `viz.js` as a namespace.** A named import the bundle lacks fails the whole
   module, and an older viewer has no `mountGraph`, so the page tests for it and plays the replay
   alone without it.
@@ -132,7 +153,10 @@ change, run `cargo tree -e normal,build --target all -d` to look for new duplica
     together.
   - ants-starter's `check.yml` downloads the latest Linux archive.
   - `web/docs/Dockerfile` downloads it at a pinned `CLI_VERSION`.
-  - `ants/baselines` finds the binary on `PATH` or through `$TINYBRAINS`.
+  - `ants/baselines` finds the binary on `PATH` or through `$TINYBRAINS`, and certifies every
+    trained model by parsing `check --json`: `ok`, `reason`, `size_metric_bytes` and
+    `infer_us_max` (`src/tb_baselines/export.py`). A key renamed in the report is a rename
+    there, and nothing compares the two — stdout stays one JSON object, diagnostics on stderr.
   - The book (`quickstart.md`, `models/testing.md`) and web's `/start` page carry the install
     lines.
 
