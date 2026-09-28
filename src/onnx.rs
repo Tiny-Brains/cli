@@ -37,15 +37,80 @@ pub struct Stats {
 /// runs here and is refused there -- so `check` refuses it first. INTERIM like Orion's operator
 /// list in `model.rs`: a copy until a node's policy can be read by a binary that links no node.
 pub const OP_ALLOWLIST: &[&str] = &[
-    "Abs", "Add", "And", "ArgMax", "ArgMin", "AveragePool", "BatchNormalization", "Cast", "Ceil",
-    "Clip", "Concat", "Constant", "ConstantOfShape", "Conv", "Div", "Elu", "Equal", "Erf", "Exp",
-    "Expand", "Flatten", "Floor", "Gather", "GatherElements", "Gemm", "GlobalAveragePool",
-    "GlobalMaxPool", "Greater", "HardSigmoid", "Identity", "InstanceNormalization",
-    "LayerNormalization", "LeakyRelu", "Less", "Log", "LogSoftmax", "MatMul", "Max", "MaxPool",
-    "Mean", "Min", "Mul", "Neg", "Not", "Or", "Pad", "Pow", "PRelu", "Range", "Reciprocal",
-    "ReduceMax", "ReduceMean", "ReduceMin", "ReduceSum", "Relu", "Reshape", "Resize", "Selu",
-    "Shape", "Sigmoid", "Sign", "Slice", "Softmax", "Softplus", "Split", "Sqrt", "Squeeze", "Sub",
-    "Sum", "Tanh", "Tile", "Transpose", "Unsqueeze", "Where",
+    "Abs",
+    "Add",
+    "And",
+    "ArgMax",
+    "ArgMin",
+    "AveragePool",
+    "BatchNormalization",
+    "Cast",
+    "Ceil",
+    "Clip",
+    "Concat",
+    "Constant",
+    "ConstantOfShape",
+    "Conv",
+    "Div",
+    "Elu",
+    "Equal",
+    "Erf",
+    "Exp",
+    "Expand",
+    "Flatten",
+    "Floor",
+    "Gather",
+    "GatherElements",
+    "Gemm",
+    "GlobalAveragePool",
+    "GlobalMaxPool",
+    "Greater",
+    "HardSigmoid",
+    "Identity",
+    "InstanceNormalization",
+    "LayerNormalization",
+    "LeakyRelu",
+    "Less",
+    "Log",
+    "LogSoftmax",
+    "MatMul",
+    "Max",
+    "MaxPool",
+    "Mean",
+    "Min",
+    "Mul",
+    "Neg",
+    "Not",
+    "Or",
+    "Pad",
+    "Pow",
+    "PRelu",
+    "Range",
+    "Reciprocal",
+    "ReduceMax",
+    "ReduceMean",
+    "ReduceMin",
+    "ReduceSum",
+    "Relu",
+    "Reshape",
+    "Resize",
+    "Selu",
+    "Shape",
+    "Sigmoid",
+    "Sign",
+    "Slice",
+    "Softmax",
+    "Softplus",
+    "Split",
+    "Sqrt",
+    "Squeeze",
+    "Sub",
+    "Sum",
+    "Tanh",
+    "Tile",
+    "Transpose",
+    "Unsqueeze",
+    "Where",
 ];
 pub const OPSET_MIN: i64 = 13;
 pub const OPSET_MAX: i64 = 19;
@@ -53,12 +118,7 @@ pub const OPSET_MAX: i64 = 19;
 /// The operators a graph uses that admission refuses: anything off [`OP_ALLOWLIST`], an operator
 /// of another domain included, since the list names the default domain's.
 pub fn refused(stats: &Stats) -> Vec<String> {
-    stats
-        .operators
-        .iter()
-        .filter(|op| !OP_ALLOWLIST.contains(&op.as_str()))
-        .cloned()
-        .collect()
+    stats.operators.iter().filter(|op| !OP_ALLOWLIST.contains(&op.as_str())).cloned().collect()
 }
 
 /// Whether the graph's opset is one admission accepts.
@@ -194,7 +254,10 @@ mod tests {
     #[test]
     fn an_operator_off_the_allowlist_is_named_and_one_on_it_is_not() {
         let s = stats(&["Conv", "GreaterOrEqual", "Relu", "ai.onnx.ml.TreeEnsemble"], 17);
-        assert_eq!(refused(&s), vec!["GreaterOrEqual".to_string(), "ai.onnx.ml.TreeEnsemble".to_string()]);
+        assert_eq!(
+            refused(&s),
+            vec!["GreaterOrEqual".to_string(), "ai.onnx.ml.TreeEnsemble".to_string()]
+        );
         assert!(refused(&stats(&["Conv", "Greater", "Where", "Floor"], 17)).is_empty());
     }
 
