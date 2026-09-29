@@ -324,6 +324,12 @@ pub fn run(
             "map_id": r["map_id"],
             "map": r["map"],
             "max_turns": max_turns,
+            // THE OTHER TERM THE MATCH WAS SCORED UNDER, and `conform` reads it back (conform.rs's
+            // `vars`). Kalam's envelope carries it from `matches.strike_ceiling`; this one did not,
+            // so a local match run with `"strike_ceiling": 2` forfeited at two strikes, wrote an
+            // envelope that never said so, and `conform` replayed it under the default of five --
+            // reporting a conformance failure on a replay the loop had reproduced exactly.
+            "strike_ceiling": strike_ceiling,
             "engine_digest": game.engine_digest,
             // What ran the adapters. A local run is not a node, so it says so rather than claiming
             // a version it is not: `conform` compares the MATCH, and a replay written here that

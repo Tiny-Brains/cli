@@ -149,6 +149,33 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let surface_ok = op_not_allowed.is_empty() && opset_ok;
     let ok = failure.is_none() && probe_ok && memory_ok && surface_ok;
 
+    // `ok` AND `reason` ARE ONE ANSWER: a machine reading this (ants/baselines' `export.py::certify`
+    // prints `reason or 'unstated'` for any `ok: false`) has nothing else to go on. `reason` used to
+    // come from the adapter `failure` alone, so every OTHER way of failing -- the ONNX surface, the
+    // probe, the memory round trip -- reported `"ok": false, "reason": null`, and an entry refused
+    // for, say, a `GreaterOrEqual` off the allowlist failed its export with "the platform refused
+    // it: unstated" and no mention of the operator. The detail stays in `surface`, `probe` and
+    // `memory`; this is the sentence.
+    let reason = failure.as_ref().map(|(_, e, _)| e.clone()).or_else(|| {
+        if let Some(r) = surface_reason(&op_not_allowed, opset_ok, stats.opset) {
+            Some(r)
+        } else if !probe_ok {
+            Some(match &probe {
+                Ok((ms, _)) => format!("PROBE_TOO_SLOW: {ms:.2} ms against a {deadline} ms turn"),
+                Err(e) => format!("PROBE_FAILED: {e}"),
+            })
+        } else if let Some((code, why)) = memory.verdict.as_ref() {
+            Some(format!("{code}: {why}"))
+        } else if !memory_ok {
+            Some(format!(
+                "MEMORY_ROUND_TRIP: {} of the calls did not carry the memory back",
+                round_trip.failed
+            ))
+        } else {
+            None
+        }
+    });
+
     if json_out {
         // Machine-readable, for a repository that automates this -- exporting a model into a
         // weight class is a loop of build, measure, resize, and parsing prose is how that loop
@@ -177,7 +204,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 "ops_max": ops_max,
                 "infer_us_max": infer_us_max,
                 "failing_case": failure.as_ref().map(|(i, ..)| *i),
-                "reason": failure.as_ref().map(|(_, e, _)| e.clone()),
+                "reason": reason,
                 "over_budget": failure.as_ref().map(|(.., o)| *o),
                 "probe": {
                     "ok": probe_ok,
@@ -485,6 +512,25 @@ fn report_graph(stats: &crate::onnx::Stats, model: &Model, size_metric: usize) {
     println!("    inputs           {}", model.input_names().join(" "));
 }
 
+/// What `--json`'s `reason` says when the ONNX SURFACE is what refused the model -- an operator off
+/// soma's allowlist, or an opset outside its range. Its own function so the codes are testable:
+/// this is the pair that used to leave `"ok": false` beside `"reason": null`, which reads to
+/// `export.py::certify` as "the platform refused it: unstated".
+fn surface_reason(op_not_allowed: &[String], opset_ok: bool, opset: i64) -> Option<String> {
+    if !op_not_allowed.is_empty() {
+        Some(format!("OP_NOT_ALLOWED: {}", op_not_allowed.join(", ")))
+    } else if !opset_ok {
+        Some(format!(
+            "OPSET: the graph declares opset {}, and admission takes {} to {}",
+            opset,
+            crate::onnx::OPSET_MIN,
+            crate::onnx::OPSET_MAX
+        ))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -497,6 +543,37 @@ mod tests {
         memory::price(&json!({
             "outputs": [{"name": "memory", "dtype": "f32", "shape": ["A", "B", "C"]}]
         }))
+    }
+
+    // `ok: false` MUST come with a sentence. ants/baselines' `export.py::certify` prints
+    // `reason or 'unstated'` for any refusal, so a null reason there is a model refused for a
+    // reason its author is never told -- which is what happened to every graph carrying an
+    // operator off the allowlist, the precise case the surface check was written for.
+    #[test]
+    fn an_operator_off_the_allowlist_names_itself_in_the_reason() {
+        let r = surface_reason(&["GreaterOrEqual".to_string()], true, 17).unwrap();
+        assert!(r.starts_with("OP_NOT_ALLOWED:"), "{r}");
+        assert!(r.contains("GreaterOrEqual"), "{r}");
+    }
+
+    #[test]
+    fn an_opset_outside_the_range_names_the_range() {
+        let r = surface_reason(&[], false, 21).unwrap();
+        assert!(r.starts_with("OPSET:"), "{r}");
+        assert!(r.contains("21"), "{r}");
+        assert!(r.contains(&crate::onnx::OPSET_MAX.to_string()), "{r}");
+    }
+
+    #[test]
+    fn a_clean_surface_states_nothing() {
+        assert_eq!(surface_reason(&[], true, 17), None);
+    }
+
+    #[test]
+    fn a_refused_operator_is_named_before_the_opset() {
+        // Both wrong: the operator is the one the author can act on first.
+        let r = surface_reason(&["Erf".to_string()], false, 21).unwrap();
+        assert!(r.starts_with("OP_NOT_ALLOWED:"), "{r}");
     }
 
     #[test]
