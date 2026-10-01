@@ -405,7 +405,7 @@
  "map_id": "basic-tiny-2p",
  "match_id": "memflaky",
  "max_turns": 10,
- "orion_version": "1.11.1",
+ "orion_version": "1.12.0",
  "reason": "turn_limit",
  "scores": [
   1,

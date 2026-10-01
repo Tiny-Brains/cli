@@ -166,6 +166,101 @@ pub fn stats(bytes: &[u8]) -> Result<Stats, String> {
     })
 }
 
+/// How a graph's multiply-accumulate work divides between convolutions with a spatial kernel and
+/// plain matrix products, per output position -- Orion 1.12.0's `model::conv_work`, copied
+/// deliberately, because it is what a node reads to decide whether a graph runs on a plan per
+/// concrete shape (`model.rs`, [`crate::model::specialising_pays`]), and a match played here has to
+/// run the plan a node runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ConvWork {
+    /// Per output position, in convolutions whose kernel covers more than one position:
+    /// `out × in/group × kernel`.
+    pub spatial: u64,
+    /// The same for 1x1 convolutions and for `MatMul`/`Gemm` against a stored weight: `out × in`.
+    pub pointwise: u64,
+}
+
+/// The operator a node asks for, qualified by its domain unless that is the default one.
+fn operator(n: &NodeProto) -> String {
+    if n.domain.is_empty() || n.domain == "ai.onnx" {
+        n.op_type.clone()
+    } else {
+        format!("{}.{}", n.domain, n.op_type)
+    }
+}
+
+/// Where a matrix-product operator's weight operand is, or `None` for an operator this accounting
+/// does not know.
+fn weight_operand(op: &str) -> Option<usize> {
+    match op {
+        "Conv" | "ConvInteger" | "MatMul" | "Gemm" | "MatMulInteger" => Some(1),
+        "QLinearConv" | "QLinearMatMul" => Some(3),
+        _ => None,
+    }
+}
+
+/// Every operator that multiplies two operands as a matrix product. One whose weight this reader
+/// cannot find makes the graph's work unknown, rather than silently small.
+fn is_matrix_product(op: &str) -> bool {
+    weight_operand(op).is_some()
+        || matches!(op, "Einsum" | "ConvTranspose" | "FusedMatMul" | "Attention")
+}
+
+/// How `bytes`' convolution and matrix-product work divides, per output position. `None` when some
+/// matrix product's weight is not a tensor the document stores, or sits in a subgraph or a
+/// model-local function: the division is unknown, and the caller takes the general plan.
+pub fn conv_work(bytes: &[u8]) -> Result<Option<ConvWork>, String> {
+    let m = parse(bytes)?;
+    let g = m.graph.as_ref().ok_or_else(|| "the document carries no graph".to_string())?;
+    let nested = |n: &NodeProto| n.attribute.iter().any(|a| a.g.is_some() || !a.graphs.is_empty());
+    if g.node.iter().any(nested)
+        || m.functions.iter().flat_map(|f| &f.node).any(|n| is_matrix_product(&operator(n)))
+    {
+        return Ok(None);
+    }
+
+    // The shape of every stored tensor, by the name a node reads it under: the initializers, and
+    // what a `Constant` node writes.
+    let mut stored: std::collections::HashMap<&str, &[i64]> =
+        g.initializer.iter().map(|t| (t.name.as_str(), t.dims.as_slice())).collect();
+    for n in &g.node {
+        if operator(n) == "Constant"
+            && let (Some(out), Some(t)) =
+                (n.output.first(), n.attribute.iter().find_map(|a| a.t.as_ref()))
+        {
+            stored.insert(out.as_str(), t.dims.as_slice());
+        }
+    }
+
+    let product = |dims: &[i64]| {
+        dims.iter().try_fold(1u64, |n, d| u64::try_from(*d).ok().map(|d| n.saturating_mul(d)))
+    };
+    let mut work = ConvWork::default();
+    for n in &g.node {
+        let op = operator(n);
+        if !is_matrix_product(&op) {
+            continue;
+        }
+        let Some(dims) = weight_operand(&op)
+            .and_then(|at| n.input.get(at))
+            .and_then(|name| stored.get(name.as_str()))
+        else {
+            return Ok(None);
+        };
+        let Some(total) = product(dims) else {
+            return Ok(None);
+        };
+        // A convolution's weight is [out, in/group, k1, k2, …]: more than one kernel position
+        // makes it spatial. A matrix product's is its [in, out] -- pointwise by definition.
+        if op.contains("Conv") && dims.len() > 2 && product(&dims[2..]) > Some(1) {
+            work.spatial = work.spatial.saturating_add(total);
+        } else {
+            work.pointwise = work.pointwise.saturating_add(total);
+        }
+    }
+    Ok(Some(work))
+}
+
 #[derive(Default)]
 struct Acc {
     params: u64,
@@ -190,12 +285,7 @@ impl Acc {
     }
 
     fn node(&mut self, n: &NodeProto) {
-        let domain = n.domain.as_str();
-        self.ops.insert(if domain.is_empty() || domain == "ai.onnx" {
-            n.op_type.clone()
-        } else {
-            format!("{domain}.{}", n.op_type)
-        });
+        self.ops.insert(operator(n));
         for a in &n.attribute {
             self.attribute(a);
         }

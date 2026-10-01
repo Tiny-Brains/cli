@@ -34,9 +34,9 @@ use tract_onnx::prelude::*;
 /// The evaluator this binary links, printed by `tinybrains games` and written into every replay it
 /// produces. An adapter is priced by datalogic on a node too, so a skew here is a skew in what a
 /// local `check` promises.
-pub const DATALOGIC_VERSION: &str = "5.6";
+pub const DATALOGIC_VERSION: &str = "5.7";
 
-/// Orion's own operators, as orion-server 1.11.1 registers them on every engine a node evaluates an
+/// Orion's own operators, as orion-server 1.12.0 registers them on every engine a node evaluates an
 /// adapter on (`engine/operators.rs`, `all()`). This build does not have them, and templating mode
 /// reads an unknown operator as data, so an adapter naming one is refused rather than evaluated
 /// differently. INTERIM: the list goes when the operators are shared with Orion, and until then it
@@ -58,7 +58,7 @@ const ORION_OPERATORS: [&str; 10] = [
 /// `model/admission.rs`, `PROBE_RUNS`.
 pub const PROBE_RUNS: usize = 5;
 
-/// The keys orion-server 1.11.1 refuses in any adapter at upload, with its reasons
+/// The keys orion-server 1.12.0 refuses in any adapter at upload, with its reasons
 /// (`model/manifest.rs`, `FORBIDDEN_OPERATORS`). Checked before [`ORION_OPERATORS`], so `random`
 /// is refused for the reason a node gives.
 const FORBIDDEN_OPERATORS: [(&str, &str); 3] = [
@@ -184,6 +184,11 @@ fn is_dim_name(s: &str) -> bool {
 pub struct Bindings(BTreeMap<String, usize>);
 
 impl Bindings {
+    /// Every name bound so far and its size, in name order.
+    pub fn bound(&self) -> impl Iterator<Item = (&str, usize)> {
+        self.0.iter().map(|(name, size)| (name.as_str(), *size))
+    }
+
     pub fn check(&mut self, declared: &[Dim], actual: &[usize], what: &str) -> Result<(), String> {
         if declared.len() != actual.len() {
             return Err(format!(
@@ -277,6 +282,33 @@ impl Inference {
     }
 }
 
+/// How many concrete-shape plans one model keeps, as a node keeps them (Orion 1.12.0's tract
+/// runtime). Past it the least recently run makes room: which plan runs is a function of the graph
+/// and the shape, never of what this process happened to see before.
+const MAX_SHAPED_PLANS: usize = 8;
+
+/// The plans prepared so far, keyed by what each named axis was bound to, most recently run last.
+type ShapedPlans = Vec<(Vec<(String, usize)>, std::sync::Arc<TypedSimplePlan>)>;
+
+/// How much more of a graph's work must be in spatial convolutions than in plain matrix products
+/// for a plan per concrete shape to be prepared -- a node's own threshold. Once every axis is
+/// known, tract lays a matrix product out with its larger dimension first, so a 1x1 convolution
+/// (whose larger dimension is the board) writes its output transposed and runs about 5x slower,
+/// while a 3x3 convolution's im2col runs 1.3x to 1.6x faster.
+const SPATIAL_TO_POINTWISE: u64 = 8;
+
+/// Whether a plan per concrete shape is worth preparing for the graph in `onnx`, decided from the
+/// graph alone as a node decides it. A graph whose work cannot be accounted for keeps its one
+/// general plan.
+pub fn specialising_pays(onnx: &[u8]) -> bool {
+    match crate::onnx::conv_work(onnx) {
+        Ok(Some(w)) => {
+            w.spatial > 0 && w.spatial >= w.pointwise.saturating_mul(SPATIAL_TO_POINTWISE)
+        }
+        Ok(None) | Err(_) => false,
+    }
+}
+
 /// A manifest and its graph, loaded and ready to answer.
 ///
 /// `name`, `digest` and `artifact_bytes` are the identity a node records on a row, kept here so a
@@ -296,6 +328,11 @@ pub struct Model {
     engine: std::sync::Arc<Engine>,
     adapters: Vec<Logic>,
     plan: std::sync::Arc<TypedSimplePlan>,
+    /// The typed graph, kept when an input has a named axis and [`specialising_pays`], and the plans
+    /// prepared from it for each concrete size -- the same specialisation a node's tract runtime
+    /// makes, so a match played here runs the plan a node runs. See [`Model::plan_for`].
+    typed: Option<TypedModel>,
+    shaped: std::sync::Mutex<ShapedPlans>,
     /// The graph index each manifest input feeds, in manifest order.
     in_order: Vec<usize>,
     /// Where each manifest output sits in the plan's output list.
@@ -384,9 +421,12 @@ impl Model {
         model.analyse(true).map_err(|e| {
             format!("the graph does not type-check with the manifest's inputs: {e}")
         })?;
-        let plan = model
-            .into_typed()
-            .and_then(|m| m.into_optimized())
+        let typed =
+            model.into_typed().map_err(|e| format!("the graph could not be prepared: {e}"))?;
+        let named = inputs.iter().any(|d| d.shape.iter().any(|dim| matches!(dim, Dim::Named(_))));
+        let kept = (named && specialising_pays(onnx)).then(|| typed.clone());
+        let plan = typed
+            .into_optimized()
             .and_then(|m| m.into_runnable())
             .map_err(|e| format!("the graph could not be prepared: {e}"))?;
 
@@ -401,9 +441,47 @@ impl Model {
             engine,
             adapters,
             plan,
+            typed: kept,
+            shaped: std::sync::Mutex::new(Vec::new()),
             in_order,
             out_order,
         })
+    }
+
+    /// The plan for the sizes `bindings` holds: the one prepared for exactly those, preparing it on
+    /// first use, or the general plan for a graph that keeps no typed graph. The same graph with its
+    /// symbols substituted answers bit for bit what the general plan does; what changes is the
+    /// kernels tract can choose once the geometry is known.
+    fn plan_for(&self, bindings: &Bindings) -> std::sync::Arc<TypedSimplePlan> {
+        let Some(typed) = &self.typed else {
+            return self.plan.clone();
+        };
+        let key: Vec<(String, usize)> =
+            bindings.bound().map(|(name, size)| (name.to_string(), size)).collect();
+        let mut shaped = self.shaped.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(at) = shaped.iter().position(|(k, _)| *k == key) {
+            let entry = shaped.remove(at);
+            let plan = entry.1.clone();
+            shaped.push(entry);
+            return plan;
+        }
+        let subs: std::collections::HashMap<Symbol, TDim> = key
+            .iter()
+            .map(|(name, size)| (typed.symbols.sym(name), TDim::Val(*size as i64)))
+            .collect();
+        let Ok(plan) = typed
+            .set_symbols(&subs)
+            .and_then(|m| m.into_optimized())
+            .and_then(|m| m.into_runnable())
+        else {
+            // A graph tract cannot specialise at this shape runs generally, as on a node.
+            return self.plan.clone();
+        };
+        if shaped.len() >= MAX_SHAPED_PLANS {
+            shaped.remove(0);
+        }
+        shaped.push((key, plan.clone()));
+        plan
     }
 
     /// One inference over one observation: every input adapter evaluated under `budget`, the graph
@@ -448,7 +526,9 @@ impl Model {
         let out = if crate::timing::profiling_nodes() {
             self.run_profiled(inputs)?
         } else {
-            self.plan.run(inputs).map_err(|e| format!("the graph failed to run: {e}"))?
+            self.plan_for(&bindings)
+                .run(inputs)
+                .map_err(|e| format!("the graph failed to run: {e}"))?
         };
         let infer_us = started.elapsed().as_micros() as u64;
         crate::timing::stop(crate::timing::P::Graph, started);
@@ -516,12 +596,13 @@ impl Model {
             tensors[self.in_order[i]] = zeros.into();
         }
         let inputs = tensors.into_iter().collect::<TVec<_>>();
+        // The plan a node's probe runs: prepared for the probe's sizes on the first run, which
+        // the median leaves out, as it does on a node.
+        let plan = self.plan_for(&Bindings(bound.clone()));
         let mut times = Vec::with_capacity(PROBE_RUNS);
         for _ in 0..PROBE_RUNS {
             let started = std::time::Instant::now();
-            self.plan
-                .run(inputs.clone())
-                .map_err(|e| format!("the probe inference failed: {e}"))?;
+            plan.run(inputs.clone()).map_err(|e| format!("the probe inference failed: {e}"))?;
             times.push(started.elapsed().as_secs_f64() * 1000.0);
         }
         times.sort_by(f64::total_cmp);
@@ -757,6 +838,87 @@ fn graph_output_names(onnx: &[u8]) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Orion 1.12.0's board fixture: two 3x3 layers and a 1x1 head (`board.onnx`), and its twin
+    /// with 1x1 layers only, over one manifest.
+    fn board_model(graph: &str) -> Model {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/board");
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(format!("{dir}/model.json")).unwrap()).unwrap();
+        let onnx = std::fs::read(format!("{dir}/{graph}")).unwrap();
+        Model::load(&manifest, &onnx).expect("loads")
+    }
+
+    /// An i8 board of `[1, 7, h, w]`, filled deterministically, under the bindings it makes.
+    fn board(h: usize, w: usize) -> (Bindings, TVec<TValue>) {
+        let v: Vec<i8> = (0..7 * h * w).map(|i| ((i * 31) % 7) as i8 - 3).collect();
+        let t = Tensor::from_shape(&[1, 7, h, w], &v).unwrap();
+        (Bindings([("H".to_string(), h), ("W".to_string(), w)].into()), tvec![t.into()])
+    }
+
+    /// A graph whose work is in 3x3 convolutions runs each board size on a plan prepared for it,
+    /// and that plan answers bit for bit what the general plan does. Past [`MAX_SHAPED_PLANS`]
+    /// sizes the least recently run plan makes room: the cache stays bounded, and a size is never
+    /// served by the general plan because of what came before it.
+    #[test]
+    fn a_concrete_shape_runs_on_its_own_plan_and_agrees() {
+        let model = board_model("board.onnx");
+        assert!(model.typed.is_some(), "a spatial graph with a named axis keeps its typed graph");
+
+        let sizes: Vec<(usize, usize)> =
+            (1..=MAX_SHAPED_PLANS + 3).map(|n| (n + 2, 2 * n + 1)).collect();
+        for &(h, w) in sizes.iter().chain(&sizes) {
+            let (bindings, inputs) = board(h, w);
+            let shaped =
+                model.plan_for(&bindings).run(inputs.clone()).expect("the shaped plan runs");
+            let general = model.plan.run(inputs).expect("the general plan runs");
+            assert_eq!(shaped[0].as_bytes(), general[0].as_bytes(), "{h}x{w}: the plans disagree");
+            assert_eq!(
+                model.shaped.lock().unwrap().last().map(|(key, _)| key.clone()),
+                Some(vec![("H".to_string(), h), ("W".to_string(), w)]),
+                "{h}x{w} ran on its own plan"
+            );
+        }
+        assert_eq!(model.shaped.lock().unwrap().len(), MAX_SHAPED_PLANS, "bounded");
+    }
+
+    /// The same boundary with 1x1 layers only keeps its one general plan, as a node keeps it: a
+    /// known size would lay each matrix product out transposed and run slower. So does a graph
+    /// with no matrix product at all, and one whose weights reach its convolutions through a
+    /// `Cast`, whose work the reader cannot account for.
+    #[test]
+    fn a_pointwise_graph_keeps_its_general_plan() {
+        let model = board_model("one-by-one.onnx");
+        assert!(model.typed.is_none());
+        let (bindings, inputs) = board(5, 6);
+        assert_eq!(model.plan_for(&bindings).run(inputs).expect("runs")[0].shape(), [1, 5, 5, 6]);
+
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/memflaky/models/memgraph");
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(format!("{dir}/manifest.json")).unwrap())
+                .unwrap();
+        let onnx = std::fs::read(format!("{dir}/model.onnx")).unwrap();
+        assert!(Model::load(&manifest, &onnx).expect("loads").typed.is_none());
+    }
+
+    /// The decision is the graph's alone, and follows the work.
+    #[test]
+    fn specialising_pays_where_spatial_work_dominates() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/board");
+        let board = std::fs::read(format!("{dir}/board.onnx")).unwrap();
+        let one = std::fs::read(format!("{dir}/one-by-one.onnx")).unwrap();
+        assert_eq!(
+            crate::onnx::conv_work(&board).unwrap(),
+            Some(crate::onnx::ConvWork { spatial: 8 * 7 * 9 + 8 * 8 * 9, pointwise: 5 * 8 })
+        );
+        assert_eq!(
+            crate::onnx::conv_work(&one).unwrap(),
+            Some(crate::onnx::ConvWork { spatial: 0, pointwise: 8 * 7 + 8 * 8 + 5 * 8 })
+        );
+        assert!(specialising_pays(&board));
+        assert!(!specialising_pays(&one));
+        assert!(!specialising_pays(b"not a model"));
+    }
 
     /// A per-cell head is indexed by the observation's ant coordinates, and the shape check bounds
     /// only its width. On the ladder a gather outside the head answers null and the seat strikes,

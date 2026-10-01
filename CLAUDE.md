@@ -40,8 +40,9 @@ cd ../ants-starter
 
 The unit tests cover what can be checked without a cartridge, and each lives beside what it
 tests: `src/memory.rs` (the carry and its pricing), `src/onnx.rs` (the allowlist and the opset
-range), `src/model.rs` (the per-cell head's bounds), `src/cmd/check.rs` (which refusal a verdict
-names, and `--json`) and `src/cmd/maps.rs` (the board name rule). For `src/wave.rs` the check that
+range), `src/model.rs` (the per-cell head's bounds, and which graphs get a plan per board size,
+on `fixtures/board/`, Orion's own fixture), `src/cmd/check.rs` (which refusal a verdict names, and
+`--json`) and `src/cmd/maps.rs` (the board name rule). For `src/wave.rs` the check that
 matters is `tinybrains conform` on a replay Kalam wrote, and `fixtures/memflaky/replay.json` is
 one; `.github/workflows/check.yml` runs all of the above on every push. After a dependency
 change, run `cargo tree -e normal,build --target all -d` to look for new duplicates.
