@@ -82,7 +82,7 @@
    "t": 9
   }
  ],
- "engine_digest": "sha256:cd656bc84c1accec25106c035dece8cdac211e1e0f1a5aa6a2e7836c1cfc3bb4",
+ "engine_digest": "sha256:819166e7918117a1cbbd67dc042e7368a076a2dd45cea5122683983912d591e1",
  "engine_ranks": [
   1,
   1
@@ -415,8 +415,8 @@
   {
    "forfeited": true,
    "infer_turns": 8,
-   "infer_us_max": 1444,
-   "infer_us_total": 1536,
+   "infer_us_max": 1477,
+   "infer_us_total": 1555,
    "m": 0,
    "manifest_hash": "sha256:f7d21d1707811b121a6e03fa354850255438020bbdce97e0c9ec042f570e080c",
    "model": "tb.v.memflaky",
@@ -428,7 +428,7 @@
   {
    "forfeited": false,
    "infer_turns": 10,
-   "infer_us_max": 57,
+   "infer_us_max": 56,
    "infer_us_total": 391,
    "m": 0,
    "manifest_hash": "sha256:5491bb19b15f021fea45513bc93a9a51013a8b69e8671ddcc189a070a58a8c54",
